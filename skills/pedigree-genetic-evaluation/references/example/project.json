@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "engine": "compare",
+  "output_dir": "example_runs",
+  "timeout": 300,
+  "pedigree": {
+    "path": "pedigree.csv",
+    "columns": {
+      "id": "id",
+      "sire": "sire",
+      "dam": "dam"
+    }
+  },
+  "analyses": [
+    {
+      "name": "synthetic_growth",
+      "species": "pig",
+      "model": "litter",
+      "phenotypes": {
+        "path": "growth.csv",
+        "columns": {
+          "id": "id"
+        }
+      },
+      "traits": [
+        {
+          "name": "age",
+          "label": "示例日龄",
+          "column": "age",
+          "unit": "days"
+        },
+        {
+          "name": "backfat",
+          "label": "示例背膘",
+          "column": "backfat",
+          "unit": "mm"
+        }
+      ],
+      "fixed": [
+        {
+          "name": "Sex",
+          "column": "effect2",
+          "type": "class"
+        },
+        {
+          "name": "Month",
+          "column": "effect3",
+          "type": "class"
+        },
+        {
+          "name": "Covariate",
+          "column": "effect4",
+          "type": "cov"
+        }
+      ],
+      "shared": {
+        "column": "litter"
+      },
+      "event_date": "measured",
+      "qc": {
+        "method": "sd",
+        "sd": 3
+      }
+    },
+    {
+      "name": "synthetic_litter_size",
+      "species": "pig",
+      "model": "repeatability",
+      "phenotypes": {
+        "path": "reproduction.csv",
+        "columns": {
+          "id": "id"
+        }
+      },
+      "traits": [
+        {
+          "name": "TNB",
+          "label": "示例总产仔数",
+          "column": "total_born",
+          "unit": "piglets/litter",
+          "distribution": "count_gaussian"
+        }
+      ],
+      "fixed": [
+        {
+          "name": "Parity",
+          "column": "effect2",
+          "type": "class"
+        },
+        {
+          "name": "Quarter",
+          "column": "effect3",
+          "type": "class"
+        }
+      ],
+      "record_key": [
+        "id",
+        "event_id"
+      ],
+      "event_date": "farrowed",
+      "qc": {
+        "method": "sd",
+        "sd": 3
+      }
+    }
+  ]
+}

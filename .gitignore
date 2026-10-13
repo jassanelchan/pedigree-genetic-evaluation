@@ -1,0 +1,45 @@
+# Local software configuration
+host_profile.json
+
+# Raw input, generated results and runtime files
+input_sources/
+code_records/
+delivery/
+evaluation_runs/
+genetic_evaluation_runs/
+genetic_evaluation_runs*/
+example_runs/
+reproduced_runs/
+run_*/
+data/
+private/
+*.xlsx
+*.xls
+*.rds
+*.RData
+*.RDataTmp
+.Rhistory
+.Rproj.user/
+
+# External executables and archives
+*.exe
+*.dll
+*.msi
+*.cab
+*.zip
+*.7z
+
+# Native solver output
+renf90*
+renadd*
+solutions
+AI_inv*
+PAROUT*
+PARIN
+INBREED
+MODINF
+SOL
+SOL_STD
+RESIDUAL
+*.log
+*.process.json

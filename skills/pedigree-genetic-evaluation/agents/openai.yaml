@@ -1,0 +1,6 @@
+interface:
+  display_name: "系谱遗传评估"
+  short_description: "用 BLUPF90 或 DMU 完成系谱评估，保留代码、参数卡和日志"
+  default_prompt: "使用 $pedigree-genetic-evaluation，根据我提供的表型和系谱文件、指定软件完成遗传评估。只在影响分析结论的关键歧义处提问，并保留完整复现记录。"
+policy:
+  allow_implicit_invocation: true
