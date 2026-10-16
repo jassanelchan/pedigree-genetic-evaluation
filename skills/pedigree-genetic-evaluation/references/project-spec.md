@@ -1,3 +1,5 @@
+[English](project-spec.md) | [简体中文](project-spec.zh-CN.md)
+
 # Project specification and execution
 
 The JSON specification records the phenotype sources, model and software choice. Data paths may be absolute or relative to the specification's directory; executable paths should be absolute. Use forward slashes for Windows paths. The CLI runs in a fresh R session and does not require an existing R workspace.
@@ -15,7 +17,7 @@ The JSON specification records the phenotype sources, model and software choice.
 | `pedigree` | Global pedigree source; may be overridden per analysis |
 | `analyses` | Nonempty list of independently prepared models, with unique names |
 
-`dmu_dir` points to the directory containing `dmu1.exe`, `dmuai.exe`, and `dmu4.exe`. R5.6 also requires its bundled shared runtime libraries. The skill does not redistribute these binaries. Read the backend guide before downloading from the official source. Package dependencies are `jsonlite`, `digest`, `processx`, `openxlsx`, `Matrix`, and `readxl` for Excel input.
+`dmu_dir` points to the directory containing `dmu1.exe`, `dmuai.exe`, and `dmu4.exe`. R5.6 also requires its bundled shared runtime libraries. The skill does not redistribute these binaries. Read the [backend guide](dmu.md) before downloading from the official source. Package dependencies are `jsonlite`, `digest`, `processx`, `openxlsx`, `Matrix`, and `readxl` for Excel input.
 
 ## Table source
 

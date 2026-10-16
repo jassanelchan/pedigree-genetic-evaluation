@@ -1,100 +1,192 @@
-# 系谱遗传评估
+# Pedigree genetic evaluation
 
-基于 R、BLUPF90 和 DMU 的畜禽系谱遗传评估流程，可作为 Codex skill 使用，也可以从命令行运行。
+**English** | [简体中文](README.zh-CN.md)
 
-从表型和系谱文件开始，完成质控、方差组分估计、育种值预测和年度趋势汇总。每次运行会保存输入副本、代码、参数卡和终端日志，方便复核和重跑。
+A livestock genetic evaluation workflow built around R, BLUPF90 and DMU. Start with phenotype and pedigree files; estimate variance components, predict breeding values and summarise annual trends.
 
-## 支持的模型
+Choose BLUPF90, DMU, or run both against the same data and model. Each run keeps the input files, analysis code, parameter files, ID maps and solver logs.
 
-| 模型 | 性状数 | 随机效应 |
-| --- | --- | --- |
-| 动物模型 | 1 或 2 | 加性遗传效应、残差 |
-| 共同窝模型 | 1 或 2 | 加性遗传效应、共同窝效应、残差 |
-| 重复力模型 | 1 | 加性遗传效应、永久环境效应、残差 |
+## Get started
 
-两个软件使用相同的数据和模型定义。可选择 `blupf90`、`dmu`，或 `compare` 对照运行。
+Use the workflow as a skill, from the command line, or from R / RStudio. All three use the same R scripts and need the [software setup](#software-setup) below for a full evaluation.
 
-当前版本不包含基因组模型、三性状模型、阈值模型、随机回归和母体遗传效应。计数性状使用高斯模型，输入会先检查是否为非负整数。
+### 1. Import the skill
 
-## 环境
+With Node.js and npm installed, copy this command into a terminal:
 
-已验证环境：Windows、R 4.5.3、RENUMF90 1.169、BLUPF90+ 2.76、DMU version 6 release 5.6。
-
-需要以下 R 包：
-
-```r
-install.packages(c(
-  "jsonlite",
-  "digest",
-  "processx",
-  "openxlsx",
-  "readxl",
-  "Matrix"
-))
+```sh
+npx skills add jassanelchan/pedigree-genetic-evaluation --skill pedigree-genetic-evaluation
 ```
 
-BLUPF90 和 DMU 程序需要自行安装，本仓库不包含可执行文件。其他程序版本需先核对输入和输出格式。
+Choose your application and installation location when prompted. The installer adds the skill instructions and supporting files; R and the evaluation programs must be installed separately.
 
-- [BLUPF90](https://nce.ads.uga.edu/wiki/)
-- [DMU](https://dmu.ghpc.au.dk/dmu/)
+Then provide the phenotype and pedigree files with an analysis request, for example:
 
-第三方程序的使用条件以各自官方说明为准。
+> Use $pedigree-genetic-evaluation with BLUPF90. Fit a bivariate model for age at 120 kg and backfat, with sex and measurement year-month as fixed effects and additive genetic and common litter effects as random effects. Use one-pass 3 SD QC and retain the code, parameter files and logs.
 
-## 使用
+See the [skill instructions](skills/pedigree-genetic-evaluation/SKILL.md) for supported models and checks. The import command uses the [skills installer](https://github.com/vercel-labs/skills).
 
-将 `skills/pedigree-genetic-evaluation` 安装到 Codex 的技能目录，然后提供表型、系谱和分析要求：
+### 2. Run from the command line
 
-> 使用 $pedigree-genetic-evaluation，分析这些表型和系谱文件。用 BLUPF90，按一次三倍标准差质控，输出遗传参数、育种值和年度趋势，保留代码与日志。
+Clone the repository and enter its directory:
 
-也可以直接运行 R 脚本。匿名示例在 `references/example` 中：
+```sh
+git clone https://github.com/jassanelchan/pedigree-genetic-evaluation.git
+cd pedigree-genetic-evaluation
+```
+
+Install R, make `Rscript` available on `PATH`, and install the dependencies once:
+
+```sh
+Rscript --vanilla -e "install.packages(c('jsonlite', 'digest', 'processx', 'openxlsx', 'readxl', 'Matrix'), repos='https://cloud.r-project.org')"
+```
+
+Check the bundled synthetic example first. This prepares the inputs without starting either solver:
+
+```sh
+Rscript --vanilla skills/pedigree-genetic-evaluation/scripts/run_eval.R --spec skills/pedigree-genetic-evaluation/references/example/project.json --engine blupf90 --prepare-only
+```
+
+After configuring BLUPF90, run the evaluation:
+
+```sh
+Rscript --vanilla skills/pedigree-genetic-evaluation/scripts/run_eval.R --spec skills/pedigree-genetic-evaluation/references/example/project.json --engine blupf90
+```
+
+Replace `blupf90` with `dmu` or `compare` to use DMU or both programs. For your own data, copy the example JSON, edit its column mappings and model, and pass its path to `--spec`. See the [project configuration guide](skills/pedigree-genetic-evaluation/references/project-spec.md).
+
+### 3. Run from R / RStudio
+
+Set the working directory to the cloned repository. If needed, install the dependencies in the R console:
+
+```r
+install.packages(
+  c("jsonlite", "digest", "processx", "openxlsx", "readxl", "Matrix"),
+  repos = "https://cloud.r-project.org"
+)
+```
+
+Then run the example:
+
+```r
+script <- normalizePath(
+  "skills/pedigree-genetic-evaluation/scripts/run_eval.R"
+)
+
+project <- normalizePath(
+  "skills/pedigree-genetic-evaluation/references/example/project.json"
+)
+
+rscript <- file.path(
+  R.home("bin"),
+  if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript"
+)
+
+prepare_only <- TRUE
+
+status <- system2(
+  rscript,
+  c(
+    "--vanilla", shQuote(script),
+    "--spec", shQuote(project),
+    "--engine", "blupf90",
+    if (prepare_only) "--prepare-only"
+  )
+)
+
+stopifnot(status == 0L)
+```
+
+After configuring the solver, set `prepare_only <- FALSE` to run the full evaluation. This launches a separate R process; do not use `source()` on the command-line entry script.
+
+The repository provides R scripts and is not currently an installable R package.
+
+## Software setup
+
+The verified environment is **Windows with R 4.5.3**. Other operating systems and program versions have not been validated.
+
+| Program | Verified version | Required for |
+| --- | --- | --- |
+| RENUMF90 | 1.169 | BLUPF90 and comparison runs |
+| BLUPF90+ | 2.76 | BLUPF90 and comparison runs |
+| DMU | Version 6, release 5.6 | DMU and comparison runs |
+
+Install the required programs separately: [BLUPF90](https://nce.ads.uga.edu/wiki/) and [DMU](https://dmu.ghpc.au.dk/dmu/). Executables are not included. The DMU adapter uses the release with separate `dmu1`, `dmuai` and `dmu4` programs.
+
+In the cloned repository, copy the local configuration template:
+
+```powershell
+Copy-Item skills/pedigree-genetic-evaluation/host_profile.example.json skills/pedigree-genetic-evaluation/host_profile.json
+```
+
+Open `host_profile.json` in a text editor and replace the example paths. Keep the entries needed by your chosen engine:
+
+```json
+{
+  "software": {
+    "renumf90": "C:/software/BLUPF90/renumf90.exe",
+    "blupf90": "C:/software/BLUPF90/blupf90+.exe",
+    "dmu_dir": "C:/software/DMU/bin"
+  }
+}
+```
+
+For an imported skill, make this copy inside the installed skill directory instead. `host_profile.json` is excluded from Git. A project's `software` settings override the local configuration. RENUMF90 and BLUPF90+ can also be found through `PATH`.
+
+If a Windows session misreads Chinese paths or columns, set these variables in PowerShell before starting R:
 
 ```powershell
 $env:LC_ALL = 'English_United States.utf8'
 $env:LANG = 'English_United States.utf8'
-
-Rscript --vanilla skills/pedigree-genetic-evaluation/scripts/run_eval.R `
-  --spec skills/pedigree-genetic-evaluation/references/example/project.json `
-  --engine blupf90 `
-  --output ./evaluation_runs
 ```
 
-运行前，在项目 JSON 的 `software` 字段填写软件的绝对路径。也可以复制技能目录中的 `host_profile.example.json` 为 `host_profile.json`，填写本机配置；该文件已加入忽略规则。
+## Models
 
-首次配置可加 `--prepare-only`，只检查数据和模型，不调用求解器。续跑可使用 `--resume <运行目录>`，相同数据、模型和程序会复用已经核验的结果。
+| Model | Traits | Random effects |
+| --- | --- | --- |
+| Animal | 1 or 2 | Additive genetic, residual |
+| Common litter | 1 or 2 | Additive genetic, common litter, residual |
+| Repeatability | 1 | Additive genetic, permanent environment, residual |
 
-## 数据处理和结果
+Both traits use the same fixed-effect structure, with categorical effects and continuous covariates supported. Litter models need a litter ID or the dam ID together with offspring birth date. Repeated records need an animal-and-event record key.
 
-默认对每个性状独立做一次均值 ±3 SD 质控。某个性状缺失或不通过质控，不会连带删除另一个有效性状。共同窝需要明确的窝号，或母亲编号与仔猪出生日期；重复记录需要个体与事件组成的记录键。
+The current scope is Gaussian pedigree models. Count traits are checked for non-negative integers and fitted with a Gaussian model. Genomic, three-trait, threshold, random-regression, maternal genetic and unknown-parent-group models are outside the current scope.
 
-父母信息可以由多个文件补充。重复耳号、冲突的父母关系、重复分娩记录和无法识别的日期会报出具体问题，不会自动猜测修补。
+## Inputs and results
 
-结果包含：
+The project JSON specifies files, columns, traits, units, model and QC. Excel, CSV, TSV and delimited text inputs are supported. The [bundled example](skills/pedigree-genetic-evaluation/references/example/project.json) contains simulated data only; see its [provenance](skills/pedigree-genetic-evaluation/references/example/provenance.md).
 
-- 质控前后描述性统计和变异系数；
-- 方差组分、表型方差、狭义遗传力、重复力、遗传相关及标准误；
-- 原始耳号对应的 EBV、SEP，以及条件允许时的可靠性；
-- 年度表型均值、平均育种值、趋势拟合和图像；
-- 原始输入副本、完整代码、参数卡、编号映射和运行日志。
+Default QC applies mean ±3 SD once, separately for each trait. A missing or rejected observation does not remove another valid trait on the same animal. Parent information can be supplemented from other files; conflicting relationships and duplicate events are reported for review.
 
-遗传参数的标准误使用完整采样协方差和 Delta 方法。年度 EBV 汇总时，同一动物在同一年只计一次，避免多胎母猪被重复加权。
+| Output | Contents |
+| --- | --- |
+| `delivery/evaluation_summary.xlsx` | QC, descriptive statistics and CV, variance components, heritability, repeatability or genetic correlation where applicable, standard errors and annual summaries |
+| `delivery/analysis_*/EBV.csv` | Original animal IDs, EBV, SEP and reliability where available |
+| `delivery/analysis_*/*.png` | QC histograms and annual trend plots |
+| Run directory | Input snapshots, reproduction configuration, code, parameter files, ID maps, solver logs, versions and run manifest |
 
-F90 启用近交校正时，使用经核验的近交系数和 Henderson 稀疏更新生成 A-inverse，减少原生整数系谱编码的舍入影响。近交系数本身仍有有限输出精度，具体方法和精度信息会随结果保存。
+Standard errors for derived genetic parameters use the full sampling covariance matrix and the Delta method. Annual summaries use measurement or farrowing year by default; each animal contributes one EBV per year. See [result definitions](skills/pedigree-genetic-evaluation/references/results.md) for interpretation and numerical checks.
 
-## 测试
+Input paths and a relative `--output` are resolved from the **project JSON directory**. The bundled example therefore writes to `skills/pedigree-genetic-evaluation/references/example/example_runs/`, with a separate subdirectory for each run.
 
-不需要安装两套评估软件即可运行公共数据处理和统计测试：
+Add `--resume <run-directory>` to continue an existing run. Matching data, model and program fingerprints allow verified results to be reused. Changing only annual summaries or plots does not require another variance-component fit.
 
-```powershell
+## Documentation
+
+- [Project configuration](skills/pedigree-genetic-evaluation/references/project-spec.md)
+- [BLUPF90 adapter](skills/pedigree-genetic-evaluation/references/blupf90.md)
+- [DMU adapter](skills/pedigree-genetic-evaluation/references/dmu.md)
+- [Results and standard errors](skills/pedigree-genetic-evaluation/references/results.md)
+- [Skill instructions](skills/pedigree-genetic-evaluation/SKILL.md)
+
+Every guide has an English and Simplified Chinese version, linked at the top of the page.
+
+## Tests
+
+Run the offline data-processing and statistical tests without either solver:
+
+```sh
 Rscript --vanilla tests/run_tests.R
 ```
 
-测试数据全部由脚本生成，仓库中的示例也均为模拟数据。软件适配器另经实际 REML、BLUP、部分性状缺失、近交、共同窝、永久环境和跨软件对照验证。
-
-## 文件说明
-
-`skills/pedigree-genetic-evaluation/SKILL.md` 是技能入口。参数字段、软件适配和结果定义分别见：
-
-- [项目配置](skills/pedigree-genetic-evaluation/references/project-spec.md)
-- [BLUPF90 适配](skills/pedigree-genetic-evaluation/references/blupf90.md)
-- [DMU 适配](skills/pedigree-genetic-evaluation/references/dmu.md)
-- [结果与标准误](skills/pedigree-genetic-evaluation/references/results.md)
+Test fixtures and the bundled example are synthetic. The adapters have also been checked with native REML and BLUP runs covering partial trait missingness, inbreeding, common litter, permanent environment and cross-program comparisons.

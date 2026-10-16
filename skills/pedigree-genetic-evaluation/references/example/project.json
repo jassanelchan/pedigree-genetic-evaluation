@@ -25,13 +25,13 @@
       "traits": [
         {
           "name": "age",
-          "label": "示例日龄",
+          "label": "Example age",
           "column": "age",
           "unit": "days"
         },
         {
           "name": "backfat",
-          "label": "示例背膘",
+          "label": "Example backfat",
           "column": "backfat",
           "unit": "mm"
         }
@@ -75,7 +75,7 @@
       "traits": [
         {
           "name": "TNB",
-          "label": "示例总产仔数",
+          "label": "Example total born",
           "column": "total_born",
           "unit": "piglets/litter",
           "distribution": "count_gaussian"

@@ -1,73 +1,75 @@
-# BLUPF90 后端：已验证版本与文件解释
+[English](blupf90.md) | [简体中文](blupf90.zh-CN.md)
 
-本后端使用 RENUMF90 **1.169** 和 BLUPF90+ **2.76**。程序由本机软件配置提供，不随 skill 分发。适配器从真实 stdout 读取版本；其他版本拒绝继续，须先增加对应输出格式的测试，不能把新版直接当作已兼容。
+# BLUPF90 backend: versions and file formats
 
-## 两个阶段
+The adapter supports RENUMF90 **1.169** and BLUPF90+ **2.76**. Executables are supplied through the host software configuration and are not distributed with the skill. The version is read from actual stdout. Other versions are rejected until their output formats have been tested; a newer release is not assumed to be compatible.
 
-`f90_fit(ctx, directory)` 在独立尝试目录运行重编码和 `OPTION method VCE`，估计方差组分。`f90_blup(ctx, fit, directory)` 把拟合后的最终组分写入另一个独立参数卡，使用 `OPTION method BLUP`、`OPTION solv_method FSPAK`、`OPTION sol se` 预测 EBV 与预测标准误。VCE 的 `solutions` 不作为最终 EBV/SEP 交付来源。
+## Estimation and prediction
 
-每次尝试保留数据、系谱、两种参数卡、stdout、stderr、模型列映射和状态 JSON。已有程序文件的目录拒绝覆盖。是否复用之前的结果由上层输入/模型/软件指纹决定；单独出现“FINISHED”不能证明该结果对应当前输入。
+`f90_fit(ctx, directory)` runs renumbering and `OPTION method VCE` in a separate attempt directory to estimate variance components. `f90_blup(ctx, fit, directory)` writes the final fitted components to another parameter file and predicts EBV and prediction standard errors using `OPTION method BLUP`, `OPTION solv_method FSPAK`, and `OPTION sol se`. The VCE `solutions` file is not used as the final EBV/SEP source.
 
-## 输入列和模型
+Each attempt preserves data, pedigree, both parameter files, stdout, stderr, the model-column map, and status JSON. Directories containing prior program files are not overwritten. Reuse is governed by input, model and software fingerprints. A `FINISHED` message alone does not establish that the result belongs to the current input.
 
-导出的 `phenotypes.txt` 无表头、空格分隔。列顺序是性状 `y1/y2`、全部固定效应列、公共动物整数 `id`、可选 `shared`。`f90_model_map.json` 保留本次实际列号和效应号。性状顺序始终来自公共模型说明，不根据结果大小猜测。
+## Data columns and model effects
 
-固定分类效应导出 `cross alpha`；连续协变量导出 `cov`，不在后面加 alpha/numer。显式均值列按固定分类效应保留。所有固定效应在 v1 中应用于所有性状。
+The exported `phenotypes.txt` is whitespace-delimited without a header. Columns are ordered as traits `y1/y2`, all fixed-effect columns, the public integer animal `id`, and optional `shared`. `f90_model_map.json` records the actual column and effect numbers. Trait order always comes from the common model specification, not from the magnitude of the results.
 
-加性效应号等于固定效应个数加 1；共享效应是下一行。因此不能把“效应3”写死为加性、“效应4”写死为窝。`RANDOM_GROUP` 引用效应行号，观测/效应位置引用数据列号，这两者不同。
+Fixed classifications are exported as `cross alpha`; numeric covariates as `cov`, without an additional alpha/numer qualifier. The explicit mean is retained as a fixed classification. In v1, all fixed effects apply to all traits.
 
-共同窝和永久环境均导出显式 `diagonal` 随机效应。模型说明负责区分 `litter` 与 `pe`；软件日志打印的 `Genetic variance(s)` 标题不决定其科学含义。PE 的共享代码必须等于该记录的公共动物代码；同一母猪多胎记录连接到同一个 PE 水平。
+The additive effect number is the number of fixed effects plus 1; the shared effect occupies the next row. Effect 3 must therefore not be hard-coded as additive, or effect 4 as litter. `RANDOM_GROUP` refers to an effect row, whereas observation and effect positions refer to data columns.
 
-公共系谱是已经验证且选定的“目标动物＋祖先”闭包。三列导出个体、父亲、母亲，未知父母为 0。`PED_DEPTH 0` 保留整个选定闭包，包括没有自身记录的目标动物，并使用完整祖先搜索。不得在这里悄悄裁剪公共系谱，否则两软件的模型基准会改变。
+Common litter and permanent environment are exported as explicit `diagonal` random effects. The model specification distinguishes `litter` from `pe`; the program's `Genetic variance(s)` heading does not determine scientific interpretation. A PE code must equal that record's public animal code, linking all litters from one sow to the same PE level.
 
-## 系谱关系矩阵的数值精度
+The public pedigree is the validated closure of target animals and their ancestors. Its three exported columns are animal, sire and dam, with unknown parents coded 0. `PED_DEPTH 0` retains the complete selected closure, including target animals without their own records, and uses a complete ancestor search. Trimming that pedigree inside the backend would change the common basis of the two software models and is not permitted.
 
-RENUMF90 1.169 的 `renaddXX.ped` 第4列把考虑近交的 Mendelian sampling inverse 编成整数，单位约为 0.001。复杂近交系谱中，这一步舍入会累积到 A-inverse，并影响固定同一组分后的 EBV 和 PEV 对照。因此需要核对关系矩阵精度，不能仅靠调宽结果容差判断两套计算一致。
+## Relationship-matrix precision
 
-当前适配器在启用近交校正时，读取并核对 `renf90.inb` 的 F 与两套动物编号，然后用 Henderson 的更新形式构造更高精度 A-inverse：每个动物贡献 `Dinv × v × v'`，其中 v 在自身位置为1、已知父母位置为−0.5，`Dinv=4/(4−已知父母数−父亲F−母亲F)`。使用 R 的 **Matrix** 包合并稀疏元素，输出17位有效数字的 i/j/value 上三角。
+In RENUMF90 1.169, column 4 of `renaddXX.ped` stores the inbreeding-adjusted Mendelian sampling inverse as an integer, at approximately 0.001 resolution. In complex inbred pedigrees, this rounding can accumulate in A-inverse and affect EBV/PEV comparisons even when the same variance components are fixed. Relationship-matrix precision must therefore be checked rather than merely widening result tolerances.
 
-VCE 与最终 BLUP 都使用同一文件，通过受支持的 `RANDOM_TYPE user_file` 接口读取。完整保留原生重编码系谱，另外生成 `pedigree_Ainv_high_precision.txt` 与 `pedigree_Ainv_precision.json`。后者说明编号、方法、原生舍入差及精度来源。这条路径只依赖 F90 和 R，不调用 DMU。
+With inbreeding enabled, the adapter reads `renf90.inb`, verifies F and both animal numberings, and constructs a higher-precision A-inverse using Henderson updates. Each animal contributes `Dinv × v × v'`, where v is 1 for the animal and −0.5 for each known parent, and `Dinv=4/(4−number of known parents−sire F−dam F)`. R's **Matrix** package combines sparse entries. The upper triangle is written as i/j/value with 17 significant digits.
 
-这里的 F 来源仍是程序导出的6位小数，**不是数学上无损的近交系数**。该矩阵减少了千分整数编码误差，仍保留有限输入精度。完整拟合和 BLUP 必须使用相同精度，不能混用旧原生整数路径估计的缓存；旧缓存会明确拒绝，要求重新拟合。
+VCE and final BLUP use the same file through the supported `RANDOM_TYPE user_file` interface. Native renumbered pedigrees are retained alongside `pedigree_Ainv_high_precision.txt` and `pedigree_Ainv_precision.json`. The JSON records numbering, construction method, native rounding differences and precision sources. This path depends only on F90 and R; it does not call DMU.
 
-禁用近交时保留 F90 的原生非近交路径，F 返回 NA 并注明设置。不会为了消除软件间差异偷偷关闭近交、改变父母或强制引入 DMU。软件输入与运行日志中的实际 `user_file` 类型需在交付说明中保留。[F90 官方 user_file 说明](https://nce.ads.uga.edu/wiki/doku.php?id=user_defined_files_for_covariances_of_random_effects)
+The source F values still have six decimal places in the program output; they are **not mathematically exact inbreeding coefficients**. This matrix reduces the integer-encoding error while retaining finite input precision. Fitting and BLUP must use the same precision. Cached estimates from the older native-integer path are explicitly rejected and require refitting.
 
-## 缺失值和协方差约束
+With inbreeding disabled, the native F90 non-inbreeding path is retained and F is returned as NA with the setting recorded. Inbreeding is not silently disabled, parents are not changed, and DMU is not introduced to remove software differences. The actual `user_file` type in the software input and logs must remain visible in the delivery record. See the [official F90 user_file documentation](https://nce.ads.uga.edu/wiki/doku.php?id=user_defined_files_for_covariances_of_random_effects).
 
-内部数据使用 NA；F90 输出使用 **-999**，参数卡明确写 `OPTION missing -999`。若真实观测恰好为 -999，立即拒绝以避免与缺失标记冲突。至少一个性状有效即可保留记录；两个性状都缺失的记录不得传入后端。固定效应、ID 和共享分组不得缺失。
+## Missing values and covariance constraints
 
-BLUPF90+ 的 VCE 会把初始 0 视作固定 0。故无约束的协方差初值必须非零；固定 0 必须在 `constraints` 中明确声明。所有初始矩阵要求对称、正定，所有矩阵以 17 位有效数字导出。v1 允许固定零协方差，不支持用零方差隐式关闭一个随机效应；应从模型中明确删除该效应。
+Internal data use NA; F90 files use **-999**, with explicit `OPTION missing -999`. An actual observation equal to -999 is rejected to avoid collision with the missing marker. A record is retained when at least one trait is valid; records missing both traits cannot enter the backend. Fixed effects, IDs and shared groups must be present.
 
-RENUM 生成的卡可能按较短格式显示初值。适配器在运行 VCE 前重新写入完整精度的原始矩阵，避免不小心把很小的非零协方差舍入成 0。最终拟合矩阵来自真实程序输出，不从原参数卡或人工录入表提取。2.76 的文本结果通常约 5 位有效数字，当前适配器保留所有可获得位数，不额外舍入成两位小数；不能声称恢复了程序未输出的精度。
+BLUPF90+ VCE treats an initial 0 as a fixed 0. Unconstrained covariance starts must therefore be nonzero, and fixed zeros must be declared in `zero_covariances` in the project specification. All starting matrices must be symmetric and positive definite; matrices are written with 17 significant digits. V1 supports fixed-zero covariances, not implicit removal of a random effect through a zero variance. Remove such an effect explicitly from the model.
 
-## 编号、近交和预测误差
+RENUM may print starts in a shorter format. Before VCE, the adapter rewrites the original matrices at full precision so that a small nonzero covariance is not rounded to zero. Final fitted matrices are parsed from actual program output, not the original parameter file or a manually entered table. The 2.76 text output generally provides about five significant digits. All available digits are retained without further two-decimal rounding; precision absent from native output cannot be recovered.
 
-RENUM 自己会再重编码公共整数 ID。验证过的 `renaddXX.ped` 有 10 列：第1列为 F90 内部代码，第10列为输入的公共 ID。适配器检查列数、一一对应和完整公共系谱覆盖，再通过公共系谱恢复原始字符耳号。输出中的 `id` 是公共代码，不能用 F90 内部编号跨模型合并。
+## IDs, inbreeding and prediction errors
 
-长格式 EBV 输出中的 `has_record` 指该动物在该性状上至少有一条非缺失的自身观测。某头猪只有日龄资料时，日龄行标 TRUE、背膘行标 FALSE；这头猪仍然可以通过双性状及亲属信息得到背膘 EBV。整体入模身份另由公共数据中的动物代码确定。
+RENUM renumbers the public integer IDs again. The verified `renaddXX.ped` format has 10 columns: column 1 is the F90 internal code, and column 10 is the input public ID. The adapter checks column count, a one-to-one map and complete public-pedigree coverage, then recovers original string IDs through the public pedigree. Output `id` is the public code; F90 internal numbers cannot be used to merge separate models.
 
-默认要求近交校正；`renf90.inb` 在已验证版本中有三列：公共 ID、F、F90 内部代码。读取 F 前必须同时核对两套编号。已知全同胞交配的匿名案例验证 F=0.25。若未获得经验证的 F，返回 NA 并记录原因；不会把近交未知当作 F=0。禁用近交校正时，输出 F 为 NA 并注明设置。
+In long-format EBV output, `has_record` means that an animal has at least one nonmissing own observation for that trait. An animal with age records only has TRUE for age and FALSE for backfat. It may still receive a backfat EBV through the bivariate model and relatives. Overall model membership is recorded separately through public data animal codes.
 
-固定方差 BLUP 的 `solutions` 必须具有五列：性状、效应、内部水平、预测值、SE。仅提取当前加性效应并验证每个公共动物×性状恰好一个结果。`OPTION sol se` 下该随机效应的 SE 用作 **预测标准误 SEP**，PEV=SEP²。固定效应的标准误、方差组分 SE 和 SEP 不能混用。
+Inbreeding adjustment is required by default. In the verified version, `renf90.inb` has three columns: public ID, F and F90 internal code. Both numberings must be checked before reading F. An anonymous full-sib mating case verifies F=0.25. If verified F is unavailable, the adapter returns NA and a reason; unknown inbreeding is never treated as F=0. With adjustment disabled, F is returned as NA and the setting is recorded.
 
-BLUP 还要求 `OPTION residual`。2.76 的 `yhat_residual` 前 n 个性状列是拟合值，后 n 列是残差。适配器核对重编码数据的动物和记录顺序、缺失掩码及“拟合值＋残差＝原观测”，再附加 `attr(ebv, "fitted")`，列为 record_id/trait/predicted，供固定方差跨软件比较。软件在缺失观测处写出的拟合值0被转换为 NA，不能作为实际预测使用。
+Fixed-component BLUP `solutions` must have five columns: trait, effect, internal level, solution and SE. Only the current additive effect is extracted, with exactly one result required for every public animal-by-trait combination. Under `OPTION sol se`, this random effect's SE is the **prediction standard error SEP**, and PEV=SEP². Fixed-effect SE, variance-component SE and SEP are not interchangeable.
 
-## 采样协方差与收敛
+BLUP also requests `OPTION residual`. In 2.76 `yhat_residual`, the first n trait columns are fitted values, followed by n residual columns. The adapter verifies renumbered animal/record order, missing masks, and fitted plus residual equals the original observation. It then attaches `attr(ebv, "fitted")` with columns record_id/trait/predicted for fixed-component comparisons. Native fitted zeros at missing observations are converted to NA rather than treated as predictions.
 
-优先读取 `AI_inv.txt` 的完整上三角。2.76 的七列为采样矩阵行索引、列索引、该行参数的效应号、trait1、trait2、组内维度、采样协方差值。对角记录提供每个参数的角色/性状元数据。残差的效应代码是总效应数加1，组内维度为0；随机组为性状数。
+## Sampling covariance and convergence
 
-适配器据此建立 `param_meta`，核对所有估计参数、完整上三角、对称性和正定性；固定零参数不在采样矩阵中。若文件缺失，可使用同一已验证版本完整打印的 inverse AI 矩阵和确定参数顺序；若格式错误或矩阵不可靠，`param_cov=NULL` 并记录原因。绝不以方差组分 SE² 拼出对角“替代矩阵”。
+The complete upper triangle of `AI_inv.txt` is preferred. Its seven columns in 2.76 are sampling-matrix row, column, the row parameter's effect number, trait1, trait2, group dimension and sampling covariance. Diagonal records provide each parameter's role/trait metadata. The residual effect code is the total number of effects plus 1, with group dimension 0; random groups have dimension equal to the trait count.
 
-`native_se` 保留 additive/shared/residual 三组原生 SE 矩阵。它只可支持对应组分的单独 SE，不能替代完整采样协方差计算 h²、重复力或遗传相关的 SE。统一结果模块使用完整参数协方差和 delta method。
+From these fields, the adapter builds `param_meta` and checks every estimated parameter, upper-triangle coverage, symmetry and positive definiteness. Fixed-zero parameters are absent from the sampling matrix. If the file is unavailable, the complete printed inverse-AI matrix from the same verified version may be used with a determined parameter order. Invalid format or an unreliable matrix yields `param_cov=NULL` with a reason. Squared component SEs are never assembled into a diagonal substitute.
 
-退出码、结束标记、最后的收敛准则、最终矩阵和 AI 信息分别检查。矩阵边界、singular、bending、NaN 等记录为诊断；程序正常结束与模型已验证是不同状态。Windows 下程序可能在找不到参数卡时仍退出0，因此必须检查实际生成文件和结束信息。
+`native_se` retains the additive/shared/residual native SE matrices. These can support individual component SEs but cannot replace the full sampling covariance needed for heritability, repeatability or genetic-correlation SEs. The shared results module uses the full parameter covariance and the delta method.
 
-## 对照检查
+Exit code, completion marker, final convergence criteria, final matrices and AI information are checked separately. Boundaries, singularity, bending and NaN are recorded as diagnostics. Program completion and model validation are distinct states. On Windows, a missing parameter file can still produce exit code 0, so generated files and actual completion information must also be checked.
 
-仓库中的模拟示例包含双性状共同窝、连续协变量、部分性状缺失和单性状重复记录，可在配置实际程序路径后用于检查完整流程。公共离线测试检查数据处理和结果计算，不代替求解器运行。
+## Cross-checks
 
-Windows 下环境变量由 `processx` 设置，不拼入参数卡或程序参数。每个程序独立保存标准输出、错误输出和退出状态。
+The repository's synthetic examples cover bivariate common litter, numeric covariates, partial trait observations and single-trait repeated records. With actual executable paths configured, they can check the full workflow. Public offline tests cover preprocessing and result calculations; they do not replace solver runs.
 
-交叉核对还考虑原生文件的精度：DMU SOL 约6位有效数字，F90 solutions 固定8位小数；F90 native yhat_residual 约8位有效数字，内部计算也可能出现单精度量级差异。PEV 容差应传播 SEP 舍入界；拟合值的数值余量以预测值尺度计算，不能用一条很低的异常表型值代替预测值尺度。这些规则在运行前确定，不根据某次结果临时放宽。
+On Windows, `processx` sets environment variables without inserting them into parameter files or program arguments. Each process preserves stdout, stderr and exit status.
 
-官方依据：[RENUMF90 输入与重编码文件说明](https://nce.ads.uga.edu/wiki/doku.php?id=readme.renumf90)、[BLUPF90+ 模式及 sol se](https://nce.ads.uga.edu/wiki/doku.php?id=readme.blupf90plus)、[F90 教程中的零协方差约束](https://nce.ads.uga.edu/wiki/lib/exe/fetch.php?media=tutorial_blupf90.pdf)。本实现的格式细节还通过本地 1.169/2.76 的匿名真实运行验证。
+Cross-checks account for native file precision: DMU SOL has approximately six significant digits, F90 solutions eight fixed decimal places, and native F90 `yhat_residual` approximately eight significant digits; internal calculations can also have differences at single-precision scale. PEV tolerance propagates SEP rounding bounds. The numerical allowance for fitted values uses the prediction scale, not an unusually small phenotype as a substitute. These rules are defined before execution, not relaxed after seeing a result.
+
+Primary references: [RENUMF90 input and renumbered files](https://nce.ads.uga.edu/wiki/doku.php?id=readme.renumf90), [BLUPF90+ modes and sol se](https://nce.ads.uga.edu/wiki/doku.php?id=readme.blupf90plus), and [zero-covariance constraints in the F90 tutorial](https://nce.ads.uga.edu/wiki/lib/exe/fetch.php?media=tutorial_blupf90.pdf). Format details were also verified with actual anonymous runs of versions 1.169/2.76.

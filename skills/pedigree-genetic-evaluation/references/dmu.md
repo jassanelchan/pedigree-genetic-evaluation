@@ -1,3 +1,5 @@
+[English](dmu.md) | [简体中文](dmu.zh-CN.md)
+
 # DMU pedigree backend
 
 ## Supported runtime
@@ -129,7 +131,7 @@ semidefiniteness within print precision. Missing or unreliable sampling
 covariance is reported as unavailable; it is never replaced with a diagonal
 matrix or SOL_STD, which concerns covariance of effect solutions.
 
-The shared results module calculates h2, repeatability and additive rg from
+The shared [results module](results.md) calculates h2, repeatability and additive rg from
 declared model components with analytic delta-method gradients. Native
 intra-class correlations are a cross-check, not an implicit denominator choice.
 For litter h2 uses VA/(VA+VC+VE). For repeatability h2 uses

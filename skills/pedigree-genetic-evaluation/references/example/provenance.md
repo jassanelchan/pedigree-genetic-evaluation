@@ -1,7 +1,9 @@
-# 模拟数据
+[English](provenance.md) | [简体中文](provenance.zh-CN.md)
 
-本目录中的表型和系谱均为模拟数据，用于运行示例项目。系谱包含创始动物、具有亲缘关系的后代和已知近交案例；表型由加性、共享和残差项生成，总产仔数另取整为非负计数。
+# Synthetic data
 
-分类效应和事件日期用于演示固定效应与年度汇总，不表示实际生产群体或推荐的生理范围。
+The phenotype and pedigree files in this directory are simulated data for the example projects. The pedigree includes founders, related descendants and a known inbreeding case. Phenotypes combine additive, shared and residual terms; total number born is additionally rounded to a nonnegative count.
 
-示例程序依赖使用者提供的 BLUPF90 或 DMU；可执行文件不随仓库分发。
+Classification effects and event dates illustrate fixed effects and annual summaries. They do not represent a production population or recommended physiological ranges.
+
+Examples require a user-provided BLUPF90 or DMU installation. Executables are not distributed with the repository.

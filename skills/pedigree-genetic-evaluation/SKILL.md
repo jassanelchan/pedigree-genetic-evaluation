@@ -3,53 +3,55 @@ name: pedigree-genetic-evaluation
 description: Run pedigree-based livestock genetic evaluation with BLUPF90, DMU, or both. Supports one/two-trait Gaussian animal and common-litter models, single-trait repeatability, QC, variance components, EBV and annual trends. Use when evaluation is requested; method questions alone do not start computation. Excludes genomic, threshold and random-regression models.
 ---
 
-# 系谱遗传评估
+# Pedigree genetic evaluation
 
-从提供的表型与系谱文件完成遗传评估，保留可复现的输入、代码、参数卡和日志。软件、性状定义、模型和质控规则以本次分析要求为准。
+**English** | [简体中文](SKILL.zh-CN.md)
 
-## 确定任务和输入
+Evaluate supplied phenotype and pedigree files, keeping reproducible inputs, code, parameter files and logs. Follow the software, trait definitions, model and QC rules agreed for the current analysis.
 
-只询问方法或可行性时，解释方法，不运行数据；要求制定方案时，先给方案。明确要求分析后，检查文件并执行。
+## Establish the analysis
 
-需要表型、系谱、物种、性状名称及单位，并确定使用 `blupf90`、`dmu` 或 `compare`。一起检查工作表、列名和少量记录。文件格式、列映射和已有要求能够确定的，不再逐项询问。
+For a question about methods or feasibility, explain without running data. For a planning request, provide the plan. Start the evaluation when analysis is requested.
 
-只有会改变分析含义的问题需要核实：性状或单位不清楚、群体混合、日期来源不明、父母关系冲突、重复事件、共同窝定义不可靠，或需要修改质控和模型。已确认的选择继续沿用。
+Identify the phenotype and pedigree sources, species, traits, units and engine (`blupf90`, `dmu` or `compare`). Inspect sheets, column names and a few records together. Resolve file formats and column mappings from the files and existing requirements where possible.
 
-不同文件中的真实父母信息可通过 `pedigree.supplements` 共同补充系谱。保留补充源和校验值；不能因为某个导出表缺少父母行，就忽略其他文件中已知的关系。
+Clarify ambiguities that change the analysis: uncertain traits or units, mixed populations, unclear date sources, conflicting parentage, duplicate events, unreliable litter definitions, or a proposed change to QC or model. Carry forward decisions already confirmed.
 
-## 配置模型
+Use `pedigree.supplements` to combine genuine parent information from additional files. Preserve source records and checksums. Do not discard known relationships merely because one export lacks the parent rows.
 
-先读[项目配置](references/project-spec.md)，按分析要求写 JSON。可参考[模拟示例](references/example/project.json)。
+## Configure the model
 
-- `animal`：单性状或双性状，固定效应、加性遗传效应和残差。
-- `litter`：单性状或双性状，增加共同窝效应。使用明确窝号，或母亲编号与仔猪出生日期；母亲编号不能单独区分不同窝。
-- `repeatability`：单性状重复记录，增加按动物编号连接的永久环境效应。必须有个体与事件组成的记录键。
+Read the [project configuration guide](references/project-spec.md) and write a JSON specification. The [synthetic example](references/example/project.json) provides a working structure.
 
-第一版两个性状使用相同的固定效应结构，支持分类效应和连续协变量，默认考虑近交。不支持基因组关系、未知亲本遗传组、母体遗传效应、异质残差和随机回归；遇到这些要求时，说明范围，不自行删掉要求继续计算。
+- `animal`: one or two traits, with fixed effects, additive genetic effects and residuals.
+- `litter`: one or two traits, adding common litter. Use a verified litter ID, or dam ID together with offspring birth date; dam ID alone does not distinguish litters.
+- `repeatability`: one trait with repeated records, adding permanent environment linked by animal ID. Require a record key composed of animal and event.
 
-按随机效应实际角色解释结果。软件打印的“Genetic variance for effect 4”不能代替模型定义，也不能把加性效应号写死。
+Both traits use the same fixed-effect structure. Categorical effects and continuous covariates are supported; inbreeding is included by default. Genomic relationships, three-trait models, unknown-parent genetic groups, maternal genetic effects, heterogeneous residuals, threshold models and random regression are outside the supported scope. Explain a scope mismatch rather than silently dropping a requested component.
 
-## 运行和核验
+Interpret random effects by their role in the model. A software heading such as “Genetic variance for effect 4” does not establish that the effect is additive genetic. Do not hard-code the additive effect number when parsing results.
 
-根据所选软件读[BLUPF90说明](references/blupf90.md)、[DMU说明](references/dmu.md)，对照模式读两者。
+## Run and verify
 
-1. 核对 R 包、程序路径和版本。软件路径由项目配置或本机 `host_profile.json` 提供，不能将个人路径写入公共文件，也不能在软件不可用时自行换另一套软件。
-2. 在新的 R 进程中执行 `scripts/run_eval.R`，使用 `Rscript --vanilla`。源文件是 UTF-8；Windows 如需指定区域设置，使用 `English_United States.utf8`。不加载旧的 `.RData` 或依赖手工录入结果的旧脚本。
-3. 按配置检查编号、父母、日期、记录键和固定效应设计。默认单次均值 ±3 SD，逐性状处理，至少有一个有效性状就保留记录。缺失与异常值分别计数，不额外套用体重范围或校正公式。
-4. 先运行 REML 并读取最终组分，再用这些组分运行 BLUP，取得 EBV 和 SEP。实际程序输出才是估计结果。
-5. 核对收敛、协方差矩阵、参数顺序、完整动物×性状覆盖和原始耳号映射。首次数值失败时，可在相同数据和模型下最多再尝试两次；改变质控、删除效应或拆分模型需要重新确定。
-6. 检查 `run_manifest.json`、汇总工作簿、图像与日志，再交付。标准误缺失或输出不完整时保持“部分完成”状态，不能用各组分标准误的平方拼出对角矩阵，代替完整采样协方差。
+Read the [BLUPF90 guide](references/blupf90.md) or [DMU guide](references/dmu.md) for the chosen engine; read both for a comparison.
 
-`--prepare-only` 只准备和检查输入。`--resume` 在指纹一致时复用拟合、育种值和对照结果。仅改变作图或年度汇总方式，不重新估计方差组分。
+1. Check R dependencies, executable paths and versions. Read paths from the project or local `host_profile.json`; keep personal paths out of public files. Do not substitute another engine when the selected program is unavailable.
+2. Launch `scripts/run_eval.R` in a fresh process with `Rscript --vanilla`. Sources are UTF-8. If Windows requires an explicit locale, use `English_United States.utf8`. Do not load an old `.RData` or depend on scripts containing manually entered estimates.
+3. Check IDs, parentage, dates, record keys and the fixed-effect design. Default QC is a single mean ±3 SD pass per trait, retaining records with at least one valid trait. Count missing and rejected values separately. Do not add a weight range or correction formula without an analysis requirement.
+4. Run REML, read the final components, then use those components in BLUP to obtain EBV and SEP. Estimates must come from the actual program output.
+5. Verify convergence, covariance matrices, parameter order, complete animal-by-trait coverage and original-ID mapping. After an initial numerical failure, make at most two further attempts with the same data and model. Reconfirm changes to QC, effect removal or model splitting.
+6. Inspect `run_manifest.json`, the summary workbook, plots and logs before delivery. Keep an incomplete run marked partial when standard errors or required outputs are missing. Never replace the full sampling covariance matrix with a diagonal matrix made from squared component standard errors.
 
-## 汇总和交付
+`--prepare-only` prepares and checks inputs without running solvers. `--resume` reuses verified fits, predictions and comparisons when fingerprints match. A change limited to plots or annual summaries does not require another variance-component fit.
 
-结果定义见[结果说明](references/results.md)。内部保留完整精度；表型描述性统计及 CV 显示两位小数，记录数为整数，遗传参数显示三位小数。遗传力等参数取最终组分计算的点估计，标准误使用完整采样协方差与 Delta 方法，和原生随机抽样标准误区分说明。
+## Summarise and deliver
 
-`compare` 使用相同数据和模型，先核对组分，再在固定同一组分下对照 EBV、PEV 和拟合值。考虑已记录的数值及打印精度；不能用高相关系数代替差值检查，也不能直接比较不同软件的原始似然常数。
+Read the [result definitions](references/results.md). Keep full numerical precision internally; display phenotype statistics and CV to two decimals, counts as integers and genetic parameters to three decimals. Calculate parameter point estimates from the final components. Use the full sampling covariance matrix and the Delta method for their standard errors, distinguishing these from native random-sampling estimates.
 
-默认按观测事件年份汇总：生长用结测或测定年份，繁殖用分娩年份。同一动物在同一年只计一次 EBV。明确要求按出生队列分析时才用出生年份，并注明汇总口径。原始表型趋势包含环境和群体组成的变化，不能直接称为遗传改良。
+In `compare` mode, use the same data and model. Check component estimates first, then compare EBV, PEV and fitted values with components held fixed at the same values. Account for recorded numerical and printing precision. A high correlation does not replace a difference check; raw likelihood constants from different programs are not directly comparable.
 
-交付结果工作簿、原始耳号 EBV 表、质控及趋势图，以及完整复现目录。每次运行保存原始输入的核验副本、相对路径复现配置、代码、参数卡、重编码表、日志与版本。不把真实数据或第三方程序放进技能包。只有要求时才另做 PPT 或 PDF。
+Default annual summaries to the observation event: measurement or end-test year for growth, farrowing year for reproduction. Count each animal's EBV once per year. Use birth cohorts only when requested and state the grouping basis. Raw phenotype trends also reflect environment and population composition; they do not measure genetic improvement alone.
 
-解释结果时沿用实际模型和统计定义：遗传力是群体方差比例，不是某头动物高出平均值的部分有多少由遗传造成。数值是否接近文献范围不能单独验证计算是否正确。
+Deliver the result workbook, original-ID EBV tables, QC and trend plots, and the complete reproduction directory. Preserve checked source copies, a relative-path reproduction specification, code, parameter files, ID maps, logs and versions for every run. Do not include real datasets or third-party executables in the skill package. Create a presentation or PDF only when requested.
+
+Explain estimates using the actual model and statistical definitions. Heritability is a population variance ratio, not the fraction of an individual animal's deviation attributable to genetics. Agreement with a published range alone does not validate the calculation.

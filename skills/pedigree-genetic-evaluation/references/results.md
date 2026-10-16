@@ -1,3 +1,5 @@
+[English](results.md) | [简体中文](results.zh-CN.md)
+
 # Results, uncertainty and figures
 
 The result module operates on validated post-QC records and final model components.
