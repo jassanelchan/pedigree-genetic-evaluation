@@ -99,8 +99,6 @@ stopifnot(status == 0L)
 
 配置好求解器后，将 `prepare_only <- TRUE` 改成 `prepare_only <- FALSE` 即可运行完整评估。这段代码会启动独立的 R 进程，不要用 `source()` 加载命令行入口脚本。
 
-目前提供的是 R 脚本接口，尚未封装为可安装的 R 包。
-
 ## 软件配置
 
 已验证的环境为 **Windows、R 4.5.3**。其他操作系统和程序版本尚未验证。
@@ -144,13 +142,36 @@ $env:LANG = 'English_United States.utf8'
 
 | 模型 | 性状数 | 随机效应 |
 | --- | --- | --- |
-| 动物模型 | 1 或 2 | 加性遗传效应、残差 |
-| 共同窝模型 | 1 或 2 | 加性遗传效应、共同窝效应、残差 |
-| 重复力模型 | 1 | 加性遗传效应、永久环境效应、残差 |
+| 动物模型（`animal`） | 1 个或多个 | 加性遗传效应、残差 |
+| 共同窝模型（`litter`） | 1 个或多个 | 加性遗传效应、共同窝效应、残差 |
+| 重复力模型（`repeatability`） | 1 个或多个 | 加性遗传效应、永久环境效应、残差 |
+| 通用模型（`general`） | 1 个或多个 | 加性遗传效应、多个命名的共同窝、永久环境或其他独立分组效应、残差 |
 
-双性状使用相同的固定效应结构，支持分类效应和连续协变量。共同窝模型需要窝号，或母亲编号与仔猪出生日期。重复记录需要由个体和事件组成的记录键。
+前三种是常见设计的快捷配置，原有项目文件仍可使用。通用模型还可以在一次分析中合并一次测定性状和重复记录性状。配置接受 `schema_version` 为 `1` 或 `2`。性状数量仍需通过数据、可辨识性和软件适配检查；三性状和四性状设计已在两套已验证版本的软件中实际运行。
 
-目前支持高斯系谱模型。计数性状会检查是否为非负整数，再使用高斯模型拟合。暂不支持基因组、三性状、阈值、随机回归、母体遗传和未知亲本遗传组模型。
+固定效应可以作用于全部性状，也可以通过 `fixed[].traits` 指定部分性状，支持分类效应和连续协变量。加性遗传效应始终作用于全部性状；其他随机项各自指定名称、角色（`litter`、`pe` 或 `iid`）及适用性状。同一随机项可以估计适用性状之间的协方差，不同命名随机项之间相互独立。
+
+共同窝效应需要窝号，或母亲编号与仔猪出生日期；永久环境效应按动物编号分组。重复记录需要由个体和真实事件组成的记录键。混合一次与重复记录时，每个性状都要明确指定所属事件：生长测定保留在原来的测定行，每次分娩各占一行，不能把生长表型复制到每一胎。没有成对观测的性状，其残差协方差需要明确约束为零，程序不会自动替用户决定。
+
+目前支持高斯系谱模型。计数性状会检查是否为非负整数，再使用高斯模型拟合。暂不支持基因组、母体遗传、异质残差、阈值、随机回归和未知亲本遗传组模型，也不支持不同命名随机项之间的协方差。
+
+### 生长与繁殖联合示例
+
+[多性状示例](skills/pedigree-genetic-evaluation/references/example/multitrait-project.json)将一次测定的达 120 kg 日龄、背膘厚与多胎总产仔数合并分析。性别用于两个生长性状，胎次和分娩季节用于总产仔数；`birth_litter` 作用于生长性状，`sow_pe` 作用于总产仔数。三个性状通过加性遗传协方差联系；生长与总产仔数来自不同事件，对应残差协方差在示例中明确约束为零。
+
+修改前先复制配置。在仓库根目录打开 PowerShell，运行：
+
+```powershell
+Copy-Item skills/pedigree-genetic-evaluation/references/example/multitrait-project.json skills/pedigree-genetic-evaluation/references/example/multitrait-local.json
+```
+
+先检查复制后的配置，不启动求解器：
+
+```sh
+Rscript --vanilla skills/pedigree-genetic-evaluation/scripts/run_eval.R --spec skills/pedigree-genetic-evaluation/references/example/multitrait-local.json --engine blupf90 --prepare-only
+```
+
+软件配置完成后，去掉 `--prepare-only` 即可运行完整评估。使用 `--engine dmu` 或 `--engine compare`，可改用 DMU 或进行双软件对照。数据路径以复制后的 JSON 所在目录为基准；如果将配置移到别处，需要同步修改路径或使用绝对路径。原来的[两套分析示例](skills/pedigree-genetic-evaluation/references/example/project.json)仍可用于分别分析生长与繁殖性状。
 
 ## 输入与结果
 
@@ -165,7 +186,9 @@ $env:LANG = 'English_United States.utf8'
 | `delivery/analysis_*/*.png` | 质控直方图和年度趋势图 |
 | 运行目录 | 输入副本、复现配置、代码、参数卡、编号映射、求解器日志、版本及运行清单 |
 
-遗传参数的标准误使用完整采样协方差矩阵与 Delta 方法。年度汇总默认按测定或分娩年份进行，同一动物在同一年只计一次 EBV。结果含义和数值核验见[结果说明](skills/pedigree-genetic-evaluation/references/results.zh-CN.md)。
+每个命名随机项的方差组分分别输出。某个性状的表型方差包括所有作用于它的方差项；只有该性状包含永久环境效应时才输出重复力，分子为加性遗传方差与永久环境方差之和，共同窝及其他独立分组效应不计入分子。
+
+遗传参数的标准误使用完整采样协方差矩阵与 Delta 方法。年度汇总默认按测定或分娩年份进行，同一动物的每个性状在同一年只计一次 EBV。混合记录设计只使用属于该性状的事件行，因此母猪的分娩年份不会被当作生长性状的测定年份。结果含义和数值核验见[结果说明](skills/pedigree-genetic-evaluation/references/results.zh-CN.md)。
 
 输入路径和相对形式的 `--output` 都以**项目 JSON 所在目录**为基准。自带示例因此会写入 `skills/pedigree-genetic-evaluation/references/example/example_runs/`，每次运行各建一个子目录。
 
@@ -189,4 +212,12 @@ $env:LANG = 'English_United States.utf8'
 Rscript --vanilla tests/run_tests.R
 ```
 
-测试和仓库示例均使用模拟数据。适配器还经过原生 REML、BLUP 实际运行检查，覆盖部分性状缺失、近交、共同窝、永久环境和跨软件对照。
+测试和仓库示例均使用模拟数据。离线测试覆盖数据准备与统计计算，包括性状专属效应、一次与重复记录混合，以及多个随机项。原生 REML、BLUP 实测覆盖原有模型、三性状与四性状设计、部分性状缺失、近交，以及上述已验证版本的跨软件对照。
+
+运行原生软件回归检查前，在本机配置中填好两套软件路径，再运行：
+
+```sh
+Rscript --vanilla tests/run_native_tests.R --profile skills/pedigree-genetic-evaluation/host_profile.json
+```
+
+该命令会对两份自带项目配置运行双软件对照，并检查已完成运行在续跑时不会重新启动求解器。添加 `--output <绝对目录>` 可指定测试结果保存位置。

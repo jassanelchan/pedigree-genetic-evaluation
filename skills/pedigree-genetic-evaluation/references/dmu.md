@@ -41,18 +41,28 @@ third-party programs.
 
 ## Models and input contract
 
-Supported models are Gaussian pedigree animal models with one or two traits,
-optionally one identity-related common-litter effect, or a one-trait repeated
-record model with animal permanent environment. The supplied fixed effects
-(including the explicit mean and numeric covariates) are retained. V1 does not
-include genomic models, UPG/metafounders, maternal genetic effects, heterogeneous
-residuals, random regressions, or differing fixed designs across traits.
+Supported models are Gaussian pedigree animal models with one or more traits,
+trait-specific fixed effects and multiple independent identity-related random
+terms. The animal, litter and repeatability shortcuts remain available;
+`model:"general"` combines named litter, animal permanent-environment and `iid`
+terms on chosen trait subsets. The explicit mean and numeric covariates are
+retained. See the [model specification](project-spec.md) for record filters,
+grouping and identifiability requirements. There is no fixed two-trait limit,
+but the data and runtime must support the requested model.
+
+Genomic models, UPG/metafounders, maternal genetic effects, heterogeneous
+residuals, threshold models and random regression are not implemented.
 
 The shared context is translated to DMU data with INTEGER*4 classification
 columns first and REAL*4 trait/covariate columns afterward. These two column
 lists have separate 1-based indices in the model directives. Public integer
 animal codes are shared with the other backend; original string IDs are saved
 in the common mapping. Class code zero is not a valid observed fixed level.
+
+Each trait's model lines list only its active fixed classes, covariates and
+random factors. Values on inactive rows are neutral placeholders, not imputed
+phenotypes. Event filters distinguish single growth records from repeated
+farrowing records; copying growth values onto farrowing rows is invalid.
 
 Missing real values use an engine-specific sentinel strictly below an
 engine-specific threshold, selected below all finite staged values. The actual
@@ -68,17 +78,26 @@ not evidence that every animal's actual F is zero. The adapter returns F as
 NA, records that it is unverified, and does not allow a verified reliability
 calculation from this mode.
 
-Random factor 1 is always additive; factor 2 is the optional litter or PE
-effect. The residual follows the last random factor. A PE is one-to-one with
-animal identity and connects its repeated records. It is not a birth litter.
-The final sampler metadata carries semantic roles rather than assuming a
-matrix's position defines its scientific meaning.
+Random factor 1 is always additive; named identity-related terms follow in
+declaration order, then the residual. A PE is one-to-one with animal identity
+and connects its repeated records; it is not a birth litter. Each factor has
+its own active trait list. Its native covariance indices are local to that
+list, so native index 2 may refer to global trait 3 when the subset is [1,3].
+The adapter maps factor numbers and local indices back to unique component
+names and global trait indices. Each component returned to the common workflow
+is a full N×N matrix with zeros outside its active principal block. Different
+named terms are independent; no between-term covariance is fitted.
 
 Free covariance entries and structural-zero constraints are separate. In this
 release a fixed-zero restriction is written with a comma in the pair, e.g.
 `$VAR_REST COV 2 E 2,1`. DMU1 can print semantic errors while returning exit zero;
 the adapter rejects its ERROR/ERRORS messages before starting the next module.
-It also confirms each constrained covariance remains zero in final PAROUT.
+For residual pairs with no real co-observation, the common specification must
+declare a zero constraint; the adapter writes DMU's non-existing-pair list.
+It does not invent this assumption. Identity-related trait pairs that never
+share a group likewise need an explicit justified zero. Constrained values
+are checked against PAROUT where present, and missing native entries are
+accepted only for declared fixed zeros.
 
 ## Estimation, prediction, and bounded execution
 
@@ -123,7 +142,11 @@ contains NPAR, parameter estimates with SE, and the complete lower-triangular
 sampling correlation/covariance matrix. The R5.6 order is checked against
 PAROUT. Restricted-zero parameters still occur as zero rows/columns in native
 PAROUT_STD and are removed from the common *estimated-parameter* covariance.
-Fixed-zero restrictions remain explicit in the model manifest.
+Fixed-zero restrictions remain explicit in the model manifest. Native local
+indices are mapped through each factor's active trait list before sampling
+parameters are matched. The common `param_meta.role` field is a unique
+component key; semantic `litter`, `pe` or `iid` roles come from the model registry.
+Inactive structural zeros do not enter the estimated-parameter covariance.
 
 Validation checks the full parameter-pair coverage, native SE squared against
 sampling diagonals, correlation/covariance consistency, and positive
@@ -134,8 +157,12 @@ matrix or SOL_STD, which concerns covariance of effect solutions.
 The shared [results module](results.md) calculates h2, repeatability and additive rg from
 declared model components with analytic delta-method gradients. Native
 intra-class correlations are a cross-check, not an implicit denominator choice.
-For litter h2 uses VA/(VA+VC+VE). For repeatability h2 uses
-VA/(VA+VPE+VE), and repeatability uses (VA+VPE)/(VA+VPE+VE).
+For trait t, Vp sums its additive, residual and all applicable named random
+variances; h2 is VA/Vp. Repeatability is reported only for traits with PE and
+uses `(VA + sum of applicable PE variances)/Vp`. Litter and generic `iid` terms
+contribute to the denominator, not the repeatability numerator. The familiar
+shortcut formulas remain VA/(VA+VC+VE) for litter-model h2, VA/(VA+VPE+VE) for
+repeatability-model h2, and (VA+VPE)/(VA+VPE+VE) for repeatability.
 
 DMU reports a restricted-likelihood criterion plus a data/fixed-effects
 constant. It is preserved as such and not directly compared with another
@@ -145,8 +172,12 @@ byte-identical output or merely high EBV correlation.
 
 ## Example and tests
 
-The bundled synthetic example exercises common litter, repeated records,
+The original synthetic example exercises common litter, repeated records,
 partial bivariate observations, fixed classes and a continuous covariate.
+The [mixed-record example](example/multitrait-project.json) jointly analyses
+two growth traits and repeated TNB with different effects and trait subsets.
+Native tests also cover three/four traits, nonconsecutive subsets, named
+random blocks and complete sampling-covariance mapping.
 After supplying the executable paths, `engine:"compare"` runs both adapters
 and checks mapped components and fixed-component EBV/PEV and fitted values.
 The repository's offline tests check preprocessing and statistical functions

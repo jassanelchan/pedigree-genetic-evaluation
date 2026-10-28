@@ -1,0 +1,139 @@
+{
+  "schema_version": 2,
+  "engine": "compare",
+  "output_dir": "example_runs",
+  "timeout": 300,
+  "threads": 2,
+  "pedigree": {
+    "path": "mixed-pedigree.csv",
+    "columns": {
+      "id": "id",
+      "sire": "sire",
+      "dam": "dam"
+    }
+  },
+  "analyses": [
+    {
+      "name": "mixed_growth_and_litter_size",
+      "species": "pig",
+      "model": "general",
+      "phenotypes": {
+        "path": "mixed-records.csv",
+        "columns": {
+          "id": "id"
+        }
+      },
+      "traits": [
+        {
+          "name": "age120",
+          "column": "age120",
+          "unit": "days",
+          "distribution": "gaussian",
+          "record_type": "single",
+          "record_filter": {
+            "column": "event_type",
+            "values": [
+              "growth"
+            ]
+          }
+        },
+        {
+          "name": "bf120",
+          "column": "bf120",
+          "unit": "mm",
+          "distribution": "gaussian",
+          "record_type": "single",
+          "record_filter": {
+            "column": "event_type",
+            "values": [
+              "growth"
+            ]
+          }
+        },
+        {
+          "name": "TNB",
+          "column": "TNB",
+          "unit": "piglets/litter",
+          "distribution": "count_gaussian",
+          "record_type": "repeated",
+          "record_filter": {
+            "column": "event_type",
+            "values": [
+              "farrowing"
+            ]
+          }
+        }
+      ],
+      "fixed": [
+        {
+          "name": "sex",
+          "column": "sex",
+          "traits": [
+            "age120",
+            "bf120"
+          ]
+        },
+        {
+          "name": "measurement_covariate",
+          "column": "covariate",
+          "type": "cov",
+          "traits": [
+            "bf120"
+          ]
+        },
+        {
+          "name": "parity",
+          "column": "parity",
+          "traits": [
+            "TNB"
+          ]
+        },
+        {
+          "name": "farrowing_season",
+          "column": "season",
+          "traits": [
+            "TNB"
+          ]
+        }
+      ],
+      "random": [
+        {
+          "name": "birth_litter",
+          "role": "litter",
+          "column": "litter",
+          "traits": [
+            "age120",
+            "bf120"
+          ]
+        },
+        {
+          "name": "sow_pe",
+          "role": "pe",
+          "traits": [
+            "TNB"
+          ]
+        }
+      ],
+      "record_key": [
+        "id",
+        "event_id"
+      ],
+      "event_date": "event_date",
+      "qc": {
+        "method": "none"
+      },
+      "zero_covariances": [
+        {
+          "component": "residual",
+          "trait1": 1,
+          "trait2": 3
+        },
+        {
+          "component": "residual",
+          "trait1": 2,
+          "trait2": 3
+        }
+      ]
+    }
+  ]
+}

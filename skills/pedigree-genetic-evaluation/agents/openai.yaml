@@ -1,6 +1,6 @@
 interface:
   display_name: "Pedigree genetic evaluation"
-  short_description: "Livestock evaluation with BLUPF90 or DMU"
-  default_prompt: "Use $pedigree-genetic-evaluation to analyse my phenotype and pedigree files with the selected software, clarify only ambiguities that affect the analysis, and retain reproducible inputs, code, parameter files and logs."
+  short_description: "Multitrait pedigree evaluation with BLUPF90 or DMU"
+  default_prompt: "Use $pedigree-genetic-evaluation to analyse my phenotype and pedigree files with the selected software and trait-specific model, clarify only ambiguities that affect the analysis, and retain reproducible inputs, code, parameter files and logs."
 policy:
   allow_implicit_invocation: true

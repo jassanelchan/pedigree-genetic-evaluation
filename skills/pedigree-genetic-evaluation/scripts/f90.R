@@ -13,7 +13,15 @@ f90_assert_directory <- function(directory) {
 }
 
 f90_roles <- function(ctx) {
-  c("additive", if (!is.null(ctx$shared_role)) "shared", "residual")
+  c(vapply(ge_random_terms(ctx), `[[`, "", "name"), "residual")
+}
+
+f90_active_traits <- function(ctx, component) {
+  if (component == "residual") return(seq_len(ctx$nt))
+  terms <- ge_random_terms(ctx)
+  at <- match(component, vapply(terms, `[[`, "", "name"))
+  if (is.na(at)) ge_stop(paste("Unknown F90 component:", component))
+  ge_effect_traits(terms[[at]], ctx$nt)
 }
 
 f90_validate_matrices <- function(ctx, values, fitting = FALSE) {
@@ -25,17 +33,20 @@ f90_validate_matrices <- function(ctx, values, fitting = FALSE) {
     }
     constrained <- ctx$constraints[[role]]
     if (is.null(constrained)) constrained <- matrix(FALSE, ctx$nt, ctx$nt)
+    active <- f90_active_traits(ctx, role)
+    structural <- matrix(TRUE, ctx$nt, ctx$nt)
+    structural[active, active] <- FALSE
     if (!identical(dim(constrained), dim(x)) || any(constrained != t(constrained)) ||
         any(is.na(constrained)) || any(x[constrained] != 0)) {
       ge_stop(paste("Invalid fixed-zero constraint matrix:", role))
     }
-    if (any(diag(constrained))) {
-      ge_stop("F90 v1 supports fixed-zero covariances, not zero variance components. Remove the component explicitly instead.")
+    if (any(x[structural] != 0) || any(!constrained[structural]) || any(diag(constrained)[active])) {
+      ge_stop("F90 inactive component rows must be structural zeros; active variances cannot be fixed to zero.")
     }
     if (fitting && any(x[!constrained] == 0)) {
       ge_stop(paste("Unconstrained initial zero would be fixed by F90; supply a nonzero start for", role))
     }
-    if (min(eigen(x, symmetric = TRUE, only.values = TRUE)$values) <= 0) {
+    if (min(eigen(x[active, active, drop = FALSE], symmetric = TRUE, only.values = TRUE)$values) <= 0) {
       ge_stop(paste("F90 needs a positive definite covariance matrix:", role))
     }
   }
@@ -73,12 +84,12 @@ f90_patch_card <- function(card, ctx, values, mode, state) {
   key <- trimws(lines)
   residual <- which(key == "RANDOM_RESIDUAL VALUES")
   blocks <- which(key == "(CO)VARIANCES")
-  if (length(residual) != 1 || length(blocks) != (1L + as.integer(!is.null(ctx$shared_role)))) {
+  roles <- vapply(ge_random_terms(ctx), `[[`, "", "name")
+  if (length(residual) != 1 || length(blocks) != length(roles)) {
     ge_stop("Unexpected RENUMF90 covariance blocks; cannot safely build the final card.", "format_mismatch")
   }
   lines[residual + seq_len(ctx$nt)] <- ge_matrix_lines(values$residual)
-  lines[blocks[1] + seq_len(ctx$nt)] <- ge_matrix_lines(values$additive)
-  if (!is.null(ctx$shared_role)) lines[blocks[2] + seq_len(ctx$nt)] <- ge_matrix_lines(values$shared)
+  for (i in seq_along(roles)) lines[blocks[i] + seq_len(ctx$nt)] <- ge_matrix_lines(values[[roles[i]]])
   if (!is.null(state$relationship_file)) {
     key <- trimws(lines)
     groups <- which(key == "RANDOM_GROUP")
@@ -102,13 +113,17 @@ f90_prepare <- function(ctx, directory, values, fitting = TRUE) {
   directory <- f90_assert_directory(directory)
   f90_validate_matrices(ctx, values, fitting)
   nt <- as.integer(ctx$nt)
-  if (!nt %in% 1:2 || !length(ctx$fixed)) ge_stop("F90 v1 requires one or two traits and explicit fixed effects.")
+  if (length(nt) != 1L || is.na(nt) || nt < 1L || !length(ctx$fixed)) ge_stop("F90 requires a positive trait count and explicit fixed effects.")
+  random <- ge_random_terms(ctx)
+  random_names <- vapply(random, `[[`, "", "name")
+  if (anyDuplicated(random_names) || !identical(unname(random_names[1L]), "additive") ||
+      !setequal(ge_effect_traits(random[[1L]], nt), seq_len(nt))) ge_stop("F90 needs one additive term on all traits, followed by independent named terms.")
   if (any(ctx$ped$id <= 0) || anyDuplicated(ctx$ped$id) ||
       any(!ctx$data$id %in% ctx$ped$id)) ge_stop("Invalid public animal IDs passed to F90.")
   trait_columns <- paste0("y", seq_len(nt))
-  input_columns <- c(trait_columns, vapply(ctx$fixed, `[[`, "", "column"), "id",
-                     if (!is.null(ctx$shared_role)) "shared")
-  if (!all(input_columns %in% names(ctx$data)) || anyDuplicated(input_columns)) ge_stop("F90 input columns are missing or repeated.")
+  input_columns <- unique(c(trait_columns, vapply(ctx$fixed, `[[`, "", "column"), "id",
+                            vapply(random, `[[`, "", "column")))
+  if (!all(input_columns %in% names(ctx$data))) ge_stop("F90 input columns are missing.")
   data <- ctx$data[input_columns]
   for (col in trait_columns) {
     if (any(data[[col]] == -999, na.rm = TRUE)) ge_stop("Observed phenotype conflicts with the F90 missing sentinel -999.")
@@ -128,39 +143,55 @@ f90_prepare <- function(ctx, directory, values, fitting = TRUE) {
   for (i in seq_along(ctx$fixed)) {
     type <- ctx$fixed[[i]]$type
     if (!type %in% c("class", "cov")) ge_stop("Unsupported F90 fixed effect type.")
-    line <- paste(c(rep(fixed_positions[i], nt), if (type == "class") c("cross", "alpha") else "cov"), collapse = " ")
+    positions <- integer(nt)
+    positions[ge_effect_traits(ctx$fixed[[i]], nt)] <- fixed_positions[i]
+    line <- paste(c(positions, if (type == "class") c("cross", "alpha") else "cov"), collapse = " ")
     lines <- c(lines, "EFFECT", line)
   }
-  animal_effect <- length(ctx$fixed) + 1L
-  shared_effect <- if (!is.null(ctx$shared_role)) animal_effect + 1L else NULL
-  lines <- c(lines, "EFFECT", paste(c(rep(match("id", input_columns), nt), "cross", "alpha"), collapse = " "),
-             "RANDOM", "animal", "FILE", "pedigree.txt", "FILE_POS", "1 2 3 0 0",
-             "PED_DEPTH", "0", "INBREEDING", if (isTRUE(ctx$inbreeding)) "pedigree" else "no-inbreeding",
-             "(CO)VARIANCES", ge_matrix_lines(values$additive))
-  if (!is.null(ctx$shared_role)) {
-    # Export pe as an explicit diagonal effect on the public animal code.
-    # RENUM then has the same one-block-per-component structure for litter/pe.
-    if (ctx$shared_role == "pe" && any(data$shared != data$id)) ge_stop("PE grouping must equal the animal code.")
-    lines <- c(lines, "EFFECT", paste(c(rep(match("shared", input_columns), nt), "cross", "alpha"), collapse = " "),
-               "RANDOM", "diagonal", "(CO)VARIANCES", ge_matrix_lines(values$shared))
+  random_effects <- setNames(length(ctx$fixed) + seq_along(random), random_names)
+  animal_effect <- unname(random_effects[["additive"]])
+  shared_effect <- if ("shared" %in% random_names) unname(random_effects[["shared"]]) else NULL
+  for (term in random) {
+    active <- ge_effect_traits(term, nt)
+    positions <- integer(nt)
+    positions[active] <- match(term$column, input_columns)
+    lines <- c(lines, "EFFECT", paste(c(positions, "cross", "alpha"), collapse = " "))
+    if (term$relationship == "pedigree") {
+      if (term$name != "additive" || term$column != "id") ge_stop("Only the additive animal term may use the pedigree relationship.")
+      lines <- c(lines, "RANDOM", "animal", "FILE", "pedigree.txt", "FILE_POS", "1 2 3 0 0",
+                 "PED_DEPTH", "0", "INBREEDING", if (isTRUE(ctx$inbreeding)) "pedigree" else "no-inbreeding")
+    } else if (term$relationship == "identity") {
+      observed <- rowSums(!is.na(ctx$data[paste0("y", active)])) > 0L
+      if (term$role == "pe" && any(data[[term$column]][observed] != data$id[observed])) ge_stop("PE grouping must equal the animal code on applicable observed records.")
+      lines <- c(lines, "RANDOM", "diagonal")
+    } else ge_stop("Unsupported F90 random-effect relationship.")
+    lines <- c(lines, "(CO)VARIANCES", ge_matrix_lines(values[[term$name]]))
   }
-  lines <- c(lines, "OPTION missing -999", "OPTION ped_search complete", "OPTION alpha_size 40", "")
+  lines <- c(lines, "OPTION missing -999", "OPTION ped_search complete", "OPTION alpha_size 40",
+             paste("OPTION max_field_readline", max(100L, length(input_columns) + 8L)),
+             paste("OPTION max_string_readline", max(800L, length(input_columns) * 32L + 128L)), "")
   writeLines(lines, file.path(directory, "renum.par"), useBytes = TRUE)
   run <- f90_run_checked(ctx$software$renumf90, directory, "renum.par", "renum.stdout.log", ctx)
   version <- f90_version(run$output, "renum")
   if (!file.exists(file.path(directory, "renf90.par")) ||
       !any(grepl("END[[:space:]]+job", run$output))) ge_stop("RENUMF90 did not complete all output files.", "engine_failed")
   state <- list(directory = directory, animal_effect = animal_effect, shared_effect = shared_effect,
-                residual_effect = animal_effect + as.integer(!is.null(ctx$shared_role)) + 1L,
+                random_effects = random_effects, residual_effect = length(ctx$fixed) + length(random) + 1L,
                 renum_version = version, input_columns = input_columns,
                 pedigree_file = sprintf("renadd%02d.ped", animal_effect))
   state$mapping <- f90_read_mapping(ctx, directory, state)
+  encoded_card <- readLines(file.path(directory, "renf90.par"), warn = FALSE)
+  effects_at <- grep("^EFFECTS:", trimws(encoded_card))
+  if (length(effects_at) != 1L) ge_stop("Cannot locate encoded F90 effect positions.", "format_mismatch")
+  animal_positions <- as.integer(strsplit(trimws(encoded_card[effects_at + animal_effect]), "[[:space:]]+")[[1]][seq_len(nt)])
+  if (anyNA(animal_positions) || length(unique(animal_positions)) != 1L || any(animal_positions <= nt)) ge_stop("Cannot verify encoded animal positions.", "format_mismatch")
+  state$encoded_animal_position <- animal_positions[1L]
   if (isTRUE(ctx$inbreeding)) {
     relationship <- f90_build_precision_inverse(ctx, directory, state)
     state$relationship_file <- relationship$file
     state$relationship_precision <- relationship$precision
   }
-  metadata_keys <- intersect(c("animal_effect", "shared_effect", "residual_effect", "renum_version", "input_columns", "pedigree_file", "relationship_file", "relationship_precision"), names(state))
+  metadata_keys <- intersect(c("animal_effect", "shared_effect", "random_effects", "residual_effect", "renum_version", "input_columns", "encoded_animal_position", "pedigree_file", "relationship_file", "relationship_precision"), names(state))
   ge_write_json(state[metadata_keys],
                 file.path(directory, "f90_model_map.json"))
   f90_patch_card(file.path(directory, "renf90.par"), ctx, values, if (fitting) "VCE" else "BLUP", state)
@@ -253,12 +284,13 @@ f90_matrix_block <- function(lines, pattern, nt) {
 
 f90_expected_meta <- function(ctx, state) {
   out <- list()
-  effects <- c(additive = state$animal_effect, if (!is.null(ctx$shared_role)) c(shared = state$shared_effect), residual = state$residual_effect)
+  effects <- c(state$random_effects, residual = state$residual_effect)
+  if (is.null(state$random_effects)) effects <- c(additive = state$animal_effect, if (!is.null(ctx$shared_role)) c(shared = state$shared_effect), residual = state$residual_effect)
   for (role in names(effects)) {
     constraint <- ctx$constraints[[role]]
     if (is.null(constraint)) constraint <- matrix(FALSE, ctx$nt, ctx$nt)
     for (i in seq_len(ctx$nt)) for (j in i:ctx$nt) if (!constraint[i, j]) {
-      out[[length(out) + 1L]] <- data.frame(effect = effects[[role]], role = if (role == "shared") ctx$shared_role else role, trait1 = i, trait2 = j)
+      out[[length(out) + 1L]] <- data.frame(effect = effects[[role]], role = role, trait1 = i, trait2 = j)
     }
   }
   do.call(rbind, out)
@@ -272,10 +304,10 @@ f90_native_se <- function(ctx, lines) {
     matrix(x, ctx$nt, ctx$nt, byrow = TRUE)
   }
   g <- grep("^[[:space:]]*SE for G[[:space:]]*$", lines)
-  n <- 1L + as.integer(!is.null(ctx$shared_role))
+  roles <- vapply(ge_random_terms(ctx), `[[`, "", "name")
+  n <- length(roles)
   g <- tail(g, n)
-  result <- list(additive = if (length(g) == n) read_at(g[1]) else NULL)
-  if (!is.null(ctx$shared_role)) result$shared <- if (length(g) == n) read_at(g[2]) else NULL
+  result <- setNames(lapply(seq_len(n), function(i) if (length(g) == n) read_at(g[i]) else NULL), roles)
   result$residual <- read_at(tail(grep("^[[:space:]]*SE for R[[:space:]]*$", lines), 1))
   result
 }
@@ -332,8 +364,7 @@ f90_fit <- function(ctx, directory, initial = ctx$initial) {
   if (!any(grepl("FINISHED \\(BLUPF90\\)", run$output))) ge_stop("BLUPF90+ did not finish the variance estimation.", "engine_failed")
   native <- file.path(state$directory, "blupf90.log")
   lines <- if (file.exists(native)) readLines(native, warn = FALSE) else run$output
-  components <- list(additive = f90_matrix_block(lines, paste0("Genetic variance\\(s\\) for effect[[:space:]]+", state$animal_effect, "[[:space:]]*$"), ctx$nt))
-  if (!is.null(ctx$shared_role)) components$shared <- f90_matrix_block(lines, paste0("Genetic variance\\(s\\) for effect[[:space:]]+", state$shared_effect, "[[:space:]]*$"), ctx$nt)
+  components <- lapply(state$random_effects, function(effect) f90_matrix_block(lines, paste0("Genetic variance\\(s\\) for effect[[:space:]]+", effect, "[[:space:]]*$"), ctx$nt))
   components$residual <- f90_matrix_block(lines, "^[[:space:]]*Residual variance\\(s\\)", ctx$nt)
   ai <- f90_read_ai(ctx, state$directory, state, lines)
   round_lines <- grep("In round.*convergence", lines, value = TRUE)
@@ -343,7 +374,8 @@ f90_fit <- function(ctx, directory, initial = ctx$initial) {
   minus2logL <- if (length(ll)) f90_number(sub(".*-2logL[[:space:]]*=[[:space:]]*([^[:space:]]+).*", "\\1", tail(ll, 1))) else NA_real_
   warnings <- c(ai$warnings, grep("NaN|bending|not positive|singular|maximum.*round|maximum.*iteration", run$output, value = TRUE, ignore.case = TRUE))
   for (role in names(components)) {
-    ev <- eigen(components[[role]], symmetric = TRUE, only.values = TRUE)$values
+    active <- f90_active_traits(ctx, role)
+    ev <- eigen(components[[role]][active, active, drop = FALSE], symmetric = TRUE, only.values = TRUE)$values
     if (min(ev) <= 0) warnings <- c(warnings, paste("Final", role, "covariance matrix is not positive definite; fixed-VC BLUP will not run."))
     else if (min(ev) / max(ev) < 1e-8) warnings <- c(warnings, paste("Final", role, "covariance matrix is close to a boundary."))
   }
@@ -369,10 +401,11 @@ f90_read_fitted <- function(ctx, directory, state) {
     native <- read.table(file, header = FALSE, comment.char = "", quote = "")
     encoded <- read.table(file.path(directory, "renf90.dat"), header = FALSE, comment.char = "", quote = "")
     if (ncol(native) != 2L * ctx$nt || nrow(native) != nrow(ctx$data) ||
-        nrow(encoded) != nrow(ctx$data) || ncol(encoded) != length(state$input_columns)) {
+        nrow(encoded) != nrow(ctx$data) || ncol(encoded) < ctx$nt) {
       stop("Native fitted-value output has an unsupported shape.")
     }
-    internal_id <- encoded[[match("id", state$input_columns)]]
+    position <- if (is.null(state$encoded_animal_position)) match("id", state$input_columns) else state$encoded_animal_position
+    internal_id <- encoded[[position]]
     public_id <- state$mapping$id[match(internal_id, state$mapping$internal_id)]
     if (anyNA(public_id) || any(public_id != ctx$data$id)) stop("Native fitted-value record order cannot be verified.")
     result <- list()

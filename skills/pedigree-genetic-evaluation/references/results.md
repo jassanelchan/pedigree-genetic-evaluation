@@ -3,26 +3,40 @@
 # Results, uncertainty and figures
 
 The result module operates on validated post-QC records and final model components.
-It does not select animals, change the model or repair failed estimation. Roles are
-semantic: `additive`, `litter`, `pe` and `residual`, regardless of the software's
-effect numbers or printed headings.
+It does not select animals, change the model or repair failed estimation. Each
+random term has a unique component name and a semantic role: `additive`, `litter`,
+`pe` or `iid`; the residual is separate. For example, `sow_pe` is a component name
+whose declared role is `pe`. Names and roles are not inferred from the software's
+effect numbers or printed headings. The legacy shortcuts retain their original
+result labels while recording the source component `shared`.
 
 ## Genetic parameters
 
 For trait t, the reported model-scale phenotypic variance is
 
-`Vp[t] = additive[t,t] + litter[t,t] + pe[t,t] + residual[t,t]`,
+`Vp[t] = additive[t,t] + sum(random_term[t,t]) + residual[t,t]`,
 
-including only components present in the model. This is variance after the specified
-fixed effects, not the raw sample variance. The usual population parameter uses
+where the sum includes every declared additional independent random term
+applicable to t. Inactive rows/columns are structural zero. This is variance after
+the specified fixed effects, not the raw sample variance. The usual population parameter uses
 additive variance rather than multiplying every animal by its own `1 + F`.
 
 - Narrow-sense heritability: `h2[t] = additive[t,t] / Vp[t]`.
-- Repeatability, only when permanent environment is modeled:
-  `(additive[t,t] + pe[t,t]) / Vp[t]`.
-- Additive genetic correlation: `additive[s,t] / sqrt(additive[s,s] * additive[t,t])`.
+- Repeatability, only for traits with permanent environment:
+  `(additive[t,t] + sum(applicable PE variances)) / Vp[t]`.
+  Only terms declared with role `pe` enter this numerator; litter and `iid`
+  terms remain in the denominator.
+- Additive genetic correlation for every distinct pair s,t:
+  `additive[s,t] / sqrt(additive[s,s] * additive[t,t])`.
 - All component variances and cross-trait covariances are included in the same table,
   with units and standard errors. Ratios and correlations are dimensionless.
+
+For the [three-trait example](example/multitrait-project.json), the two growth
+traits have Vp=VA+Vbirth_litter+VE, while TNB has Vp=VA+Vsow_pe+VE.
+Repeatability is reported for TNB only. The full additive matrix links all three
+traits; the litter matrix has no TNB variance, and the PE matrix has no growth
+variance. The parameter table records both `component` and semantic `role` so
+several named environmental terms remain distinguishable.
 
 A zero total variance makes heritability and repeatability undefined. A zero
 additive diagonal makes the corresponding genetic correlation undefined. Small or
@@ -37,13 +51,17 @@ Standard errors of functions use the analytic Delta method:
 `SE(f) = sqrt(gradient(f)' %*% param_cov %*% gradient(f))`.
 
 `param_meta` must describe every estimated covariance parameter in the exact row
-and column order of the full sampling covariance matrix. Effect order is not
+and column order of the full sampling covariance matrix. Its `role` field contains
+the unique component key, with semantic roles supplied by the model registry;
+trait indices follow the global trait order. Native factor-local indices are
+mapped before use, including nonconsecutive active subsets. Effect order is not
 assumed. Estimated parameters may be rearranged if metadata and covariance are
-rearranged together. A constrained zero is absent from the sampling parameter set.
+rearranged together. Constrained and inactive structural zeros are absent from
+the sampling parameter set.
 
 For heritability A/P, derivatives are `(P-A)/P^2` for additive variance and
 `-A/P^2` for each other diagonal variance. For repeatability N/P, the derivative
-is `(P-N)/P^2` for additive and permanent-environment variances, and `-N/P^2`
+is `(P-N)/P^2` for additive and every applicable permanent-environment variance, and `-N/P^2`
 for the other diagonals. For genetic correlation r, derivatives are
 `1/sqrt(A_s*A_t)` for the covariance, `-r/(2*A_s)` and `-r/(2*A_t)` for the
 two additive variances.
@@ -77,13 +95,19 @@ the measurement year, and litter size uses the farrowing year. Optional `birth_y
 summaries answer a different question: change across birth cohorts. The two bases
 are identified in the table and filename; they are never silently mixed.
 
+For mixed single/repeated designs, `record_filter` defines each trait's event
+membership. Only retained rows belonging to that trait enter its yearly groups,
+including applicable rows where that trait is missing but another is observed.
+A sow's farrowing dates therefore do not create new growth-year EBV entries.
+Membership is distinct from whether an observation passed QC.
+
 For each year and trait:
 
 - Phenotypic means and SD use valid observations for that trait. Repeated records
   contribute as records, so litter size has one observation per retained litter.
-- Mean EBV counts each animal at most once per year, including animals with another
-  trait observed but their own value missing. The same sow may enter several
-  production years, once in each year.
+- Mean EBV counts each animal at most once per year within its applicable event
+  rows, including animals with another trait observed but their own value missing.
+  The same sow may enter several farrowing years for TNB, once in each year.
 - `n_records`, `n_animals`, `n_phenotyped` and `n_ebv` are separate. An EBV yearly
   group is not weighted by each sow's number of litters.
 - Invalid or unavailable years are omitted from that annual summary and reported.
@@ -109,12 +133,13 @@ tables for the combined project summary.
 - CSV has a UTF-8 BOM. Original IDs are strings; the workbook preserves leading
   zeros. Import CSV ID columns as text if Excel automatically converts them.
 - QC before/after histograms use the same bins and axes. Provide optional
-  `ctx$raw_data` or `ctx$qc_before` with numeric `y1`, `y2` values before QC.
+  `ctx$raw_data` or `ctx$qc_before` with numeric `y1 ... yN` values before QC.
   If these values are unavailable, export retained distributions only and report
   that before-QC figures could not be produced.
 - Trend plot titles are only `表型进展` and `遗传进展`. Axes identify the annual
   basis, trait and unit. Lines show means; dashed lines show the annual fit.
-  No explanatory footer is added.
+  No explanatory footer is added. More than four traits are split across PNGs
+  in blocks of at most four, with the trait range included in each filename.
 - No valid values for a trait produce an explicitly empty panel, not a fictitious
   distribution. Report labels follow supplied trait names and units.
 - Optional user descriptive tables should expose counts as integer columns,

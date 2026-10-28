@@ -17,6 +17,10 @@ for (module in c("common.R", "data.R", "results.R")) {
   source(file.path(skill_path, "scripts", module), encoding = "UTF-8")
 }
 
+for (test_file in c("test_general_data.R", "test_general_results.R")) {
+  source(file.path(repository, "tests", test_file), encoding = "UTF-8")
+}
+
 checks <- 0L
 
 check <- function(condition, description) {
@@ -302,6 +306,9 @@ run_checks <- function() {
           identical(trimws(readLines(process$stdout)), "environment-ok"),
         "Process execution preserves spaced arguments and named environment values")
 
+  run_general_data_checks(check, check_close, expect_error_code, work,
+                          file.path(skill_path, "references", "example"))
+  run_general_results_checks(check, check_close, expect_error_code, work)
   cat(sprintf("Passed %d offline checks. No evaluation executable or private data was used.\n", checks))
 }
 

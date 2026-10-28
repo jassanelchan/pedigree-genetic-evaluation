@@ -34,11 +34,17 @@ ge_validate_spec <- function(spec) {
   source_check(spec$pedigree,TRUE)
   for (analysis in spec$analyses) {
     check(analysis,c("name","species","model","phenotypes","pedigree","traits","fixed","shared","event_date","birth_date",
-                     "record_key","qc","inbreeding","predict_ids","allow_observed_founders","trend_basis","initial","zero_covariances"),"Analysis")
+                     "record_key","qc","inbreeding","predict_ids","allow_observed_founders","trend_basis","initial","zero_covariances","random"),"Analysis")
     source_check(analysis$phenotypes)
     source_check(analysis$pedigree,TRUE)
-    for (trait in analysis$traits) check(trait,c("name","label","column","unit","distribution"),"Trait")
-    for (effect in analysis$fixed) check(effect,c("name","column","type","from_date","grouping"),"Fixed effect")
+    for (trait in analysis$traits) check(trait,c("name","label","column","unit","distribution","record_type","record_filter"),"Trait")
+    for (effect in analysis$fixed) check(effect,c("name","column","type","from_date","grouping","traits"),"Fixed effect")
+    for (trait in analysis$traits) {
+      check(trait$record_filter, c("column", "values"), "Trait record filter")
+    }
+    for (term in analysis$random) {
+      check(term, c("name", "role", "column", "dam", "traits"), "Random effect")
+    }
     check(analysis$shared,c("column","dam"),"Shared effect")
     check(analysis$qc,c("method","sd","group_by"),"QC")
     for (zero in analysis$zero_covariances) check(zero,c("component","trait1","trait2"),"Zero covariance")
@@ -107,13 +113,17 @@ ge_software_profile <- function(spec) {
 
 ge_fit_validity <- function(ctx, fit) {
   if (!isTRUE(fit$converged)) ge_stop("REML did not reach a supported convergence condition", "not_converged")
-  roles <- c("additive", if (!is.null(ctx$shared_role)) "shared", "residual")
+  roles <- c(vapply(ge_random_terms(ctx), function(term) term$name, character(1)), "residual")
   for (role in roles) {
     matrix <- fit$components[[role]]
     if (is.null(matrix) || !all(dim(matrix) == c(ctx$nt, ctx$nt)) || any(!is.finite(matrix))) {
       ge_stop(paste("Incomplete final component:", role), "incomplete_components")
     }
     scale <- max(1, max(abs(matrix)))
+    if (!is.null(ctx$constraints[[role]]) &&
+        any(abs(matrix[ctx$constraints[[role]]]) > 1e-8 * scale)) {
+      ge_stop(paste("Fixed or structural zero changed in final component:", role), "invalid_covariance")
+    }
     if (max(abs(matrix - t(matrix))) > 1e-8 * scale ||
         min(eigen(matrix, symmetric = TRUE, only.values = TRUE)$values) < -1e-8 * scale) {
       ge_stop(paste("Invalid final covariance matrix:", role), "invalid_covariance")
@@ -134,9 +144,10 @@ ge_execute_fit <- function(ctx, engine, directory, resume) {
   }
   observation_columns <- c("record_id", "id", paste0("y", seq_len(ctx$nt)),
                             vapply(ctx$fixed, function(x) x$column, character(1)),
-                            if (!is.null(ctx$shared_role)) "shared")
+                            vapply(ge_random_terms(ctx), function(term) term$column, character(1)))
+  observation_columns <- unique(observation_columns)
   fingerprint <- ge_hash(list(data = ctx$data[observation_columns], ped = ctx$ped,
-                              fixed = ctx$fixed, constraints = ctx$constraints,
+                              fixed = ctx$fixed, random = ge_random_terms(ctx), constraints = ctx$constraints,
                               inbreeding = ctx$inbreeding,
                               initial = ctx$initial, family = ctx$family,
                               programs = vapply(executable_paths, ge_hash_file, character(1)),
@@ -159,11 +170,10 @@ ge_execute_fit <- function(ctx, engine, directory, resume) {
     initial <- ctx$initial
     if (attempt == 2L) {
       initial$additive <- initial$additive * (0.5 / 0.3)
-      initial$residual <- initial$residual * if (is.null(ctx$shared_role)) (0.5 / 0.7) else (0.4 / 0.6)
+      initial$residual <- initial$residual * 0.8
+      signs <- (-1) ^ seq_len(ctx$nt)
       for (role in names(initial)) {
-        if (ctx$nt == 2L && !ctx$constraints[[role]][1L,2L]) {
-          initial[[role]][1L,2L] <- initial[[role]][2L,1L] <- -abs(initial[[role]][1L,2L])
-        }
+        initial[[role]] <- initial[[role]] * outer(signs, signs)
       }
     }
     context <- ctx
@@ -186,7 +196,7 @@ ge_execute_fit <- function(ctx, engine, directory, resume) {
                                              state = "failed", reason = conditionMessage(outcome),
                                              code = if (inherits(outcome, "ge_error")) outcome$code else "runtime_error")
     if (inherits(outcome, "ge_error") && outcome$code %in%
-        c("backend_unavailable", "unsupported_version", "invalid_input", "unsupported_constraint", "incomplete_parameter_map")) break
+        c("backend_unavailable", "unsupported_version", "unsupported_engine_version", "invalid_input", "unsupported_constraint", "incomplete_parameter_map")) break
   }
   ge_write_json(attempts, file.path(directory, "attempts.json"))
   if (is.null(fit)) ge_stop(paste("REML failed after bounded attempts:", attempts[[length(attempts)]]$reason),
@@ -289,7 +299,10 @@ ge_main <- function() {
   base <- dirname(spec_file)
   spec <- ge_read_json(spec_file)
   ge_validate_spec(spec)
-  if (!identical(as.integer(spec$schema_version), 1L)) ge_stop("schema_version must be 1", "unsupported_schema")
+  schema <- suppressWarnings(as.numeric(unlist(spec$schema_version)))
+  if (length(schema) != 1L || !is.finite(schema) || !schema %in% c(1L, 2L)) {
+    ge_stop("schema_version must be integer 1 or 2", "unsupported_schema")
+  }
   engine <- ge_option("--engine", spec$engine)
   if (is.null(engine) || !engine %in% c("blupf90", "dmu", "compare")) {
     ge_stop("Choose blupf90, dmu or compare explicitly", "engine_choice_required")
@@ -364,7 +377,7 @@ ge_main <- function() {
       list(path=ge_path(x$path,base),sha256=ge_hash_file(ge_path(x$path,base)))
     })
     ge_write_json(list(model = context$model_description, inbreeding = context$inbreeding,
-                        traits = context$traits, fixed = context$fixed,
+                        traits = context$traits, fixed = context$fixed, random = context$random,
                         constraints = context$constraints,
                         pedigree_supplements = supplemental_sources,
                         phenotype_sha256 = ge_hash_file(ge_path(analysis$phenotypes$path, base)),

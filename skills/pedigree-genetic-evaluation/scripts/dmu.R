@@ -35,21 +35,42 @@ dmu_runtime <- function(ctx) {
 }
 
 dmu_roles <- function(ctx) {
-  if (is.null(ctx$shared_role)) c("additive", "residual") else
-    c("additive", ctx$shared_role, "residual")
+  c(vapply(ge_random_terms(ctx), `[[`, character(1), "name"), "residual")
 }
 
-dmu_block_key <- function(role) if (role %in% c("litter", "pe")) "shared" else role
+dmu_block_key <- function(role) role
+
+dmu_factor_map <- function(ctx) {
+  random <- ge_random_terms(ctx)
+  factors <- lapply(seq_along(random), function(i) {
+    term <- random[[i]]
+    list(factor = i, name = term$name, role = term$role,
+         relationship = term$relationship, column = term$column,
+         traits = sort(ge_effect_traits(term, ctx$nt)))
+  })
+  factors[[length(factors) + 1L]] <- list(factor = length(factors) + 1L,
+                                         name = "residual", role = "residual",
+                                         relationship = "residual", traits = seq_len(ctx$nt))
+  factors
+}
+
+dmu_active <- function(ctx, name) {
+  factors <- dmu_factor_map(ctx)
+  found <- which(vapply(factors, `[[`, character(1), "name") == name)
+  if (length(found) != 1L) ge_stop("DMU component name is missing or ambiguous", "invalid_context")
+  factors[[found]]$traits
+}
 
 dmu_validate_context <- function(ctx, matrices) {
-  if (!ctx$nt %in% c(1L, 2L) || nrow(ctx$traits) != ctx$nt) {
-    ge_stop("DMU v1 supports one or two explicitly ordered traits", "unsupported_model")
-  }
-  if (!is.null(ctx$shared_role) && !ctx$shared_role %in% c("litter", "pe")) {
-    ge_stop("Unsupported DMU shared relationship", "unsupported_model")
-  }
-  if (identical(ctx$shared_role, "pe") && ctx$nt != 1L) {
-    ge_stop("The current DMU repeatability adapter supports one trait", "unsupported_model")
+  if (length(ctx$nt) != 1L || !is.finite(ctx$nt) || ctx$nt < 1L || ctx$nt != floor(ctx$nt) ||
+      nrow(ctx$traits) != ctx$nt) ge_stop("DMU needs a positive number of explicitly ordered traits", "unsupported_model")
+  random <- ge_random_terms(ctx)
+  keys <- vapply(random, `[[`, character(1), "name")
+  if (!length(random) || anyDuplicated(keys) || "residual" %in% keys) ge_stop("Invalid DMU random component names")
+  additive <- which(vapply(random, function(x) identical(x$role, "additive") && identical(x$relationship, "pedigree"), logical(1)))
+  if (length(additive) != 1L || additive != 1L ||
+      !setequal(ge_effect_traits(random[[additive]], ctx$nt), seq_len(ctx$nt))) {
+    ge_stop("DMU requires one additive pedigree component on all traits, listed first", "unsupported_model")
   }
   if (!is.data.frame(ctx$ped) || !nrow(ctx$ped) || anyDuplicated(ctx$ped$id) ||
       anyNA(ctx$ped[c("id", "sire", "dam", "sort")])) {
@@ -77,6 +98,8 @@ dmu_validate_context <- function(ctx, matrices) {
     if (!fx$type %in% c("class", "cov") || !fx$column %in% names(ctx$data)) {
       ge_stop("Invalid DMU fixed-effect specification", "unsupported_model")
     }
+    active <- ge_effect_traits(fx, ctx$nt)
+    if (!length(active) || any(!active %in% seq_len(ctx$nt))) ge_stop("Invalid DMU fixed-effect active traits")
     v <- ctx$data[[fx$column]]
     if (anyNA(v) || any(!is.finite(v))) ge_stop("DMU fixed effects cannot be missing")
     if (fx$type == "class" &&
@@ -84,36 +107,49 @@ dmu_validate_context <- function(ctx, matrices) {
       ge_stop("DMU class codes must be positive INTEGER*4 values")
     }
   }
-  if (!is.null(ctx$shared_role)) {
-    shared <- ctx$data$shared
-    if (is.null(shared) || anyNA(shared) ||
-        any(shared <= 0 | shared != floor(shared) | shared > .Machine$integer.max)) {
-      ge_stop("DMU shared-effect codes must be positive INTEGER*4 values")
+  for (term in random) {
+    active <- ge_effect_traits(term, ctx$nt)
+    if (!length(active) || any(!active %in% seq_len(ctx$nt)) ||
+        !term$relationship %in% c("pedigree", "identity") || !term$column %in% names(ctx$data)) {
+      ge_stop("Unsupported DMU random term", "unsupported_model")
     }
-    if (identical(ctx$shared_role, "pe")) {
-      pairs <- unique(ctx$data[c("id", "shared")])
-      if (anyDuplicated(pairs$id) || anyDuplicated(pairs$shared)) {
-        ge_stop("Permanent environment must identify exactly one effect per animal")
-      }
+    if (term$relationship == "pedigree" && term$role != "additive") ge_stop("Additional pedigree terms are outside this adapter's scope", "unsupported_model")
+    value <- ctx$data[[term$column]]
+    if (anyNA(value) || any(!is.finite(value)) ||
+        any(value <= 0 | value != floor(value) | value > .Machine$integer.max)) {
+      ge_stop("DMU random-factor codes must be positive INTEGER*4 values")
+    }
+    observed <- rowSums(!is.na(ctx$data[paste0("y", active)])) > 0L
+    if (term$role == "pe" && any(value[observed] != ctx$data$id[observed])) {
+      ge_stop("Permanent environment must use the public animal code on its observed traits")
     }
   }
   for (role in dmu_roles(ctx)) {
     key <- dmu_block_key(role)
     x <- matrices[[key]]
+    active <- dmu_active(ctx, key)
     if (is.null(x) || !identical(dim(x), c(as.integer(ctx$nt), as.integer(ctx$nt))) ||
         any(!is.finite(x)) || max(abs(x - t(x))) > 1e-10 * max(1, max(abs(x))) ||
-        any(diag(x) <= 0) || min(eigen(x, symmetric = TRUE, only.values = TRUE)$values) <= 0) {
-      ge_stop(paste("DMU covariance matrix must be finite, symmetric and positive definite:", key),
+        any(diag(x)[active] <= 0) || min(eigen(x[active, active, drop = FALSE], symmetric = TRUE, only.values = TRUE)$values) <= 0) {
+      ge_stop(paste("DMU active covariance matrix must be finite, symmetric and positive definite:", key),
               "invalid_components")
     }
+    inactive <- setdiff(seq_len(ctx$nt), active)
+    if (length(inactive) && any(x[inactive, , drop = FALSE] != 0)) ge_stop("Inactive DMU component rows/columns must be structural zero", "invalid_components")
     restriction <- ctx$constraints[[key]]
     if (!is.null(restriction)) {
       if (!identical(dim(restriction), dim(x)) || anyNA(restriction) ||
           !identical(as.logical(restriction), as.logical(t(restriction))) ||
-          any(diag(restriction)) || any(x[restriction] != 0)) {
+          any(diag(restriction)[active]) || any(x[restriction] != 0) ||
+          (length(inactive) && any(!restriction[inactive, , drop = FALSE]))) {
         ge_stop(paste("Invalid fixed-zero covariance specification:", key), "invalid_constraint")
       }
     }
+  }
+  paired <- crossprod(!is.na(as.matrix(ctx$data[paste0("y", seq_len(ctx$nt))])))
+  absent <- upper.tri(paired) & paired == 0
+  if (any(absent & !ctx$constraints$residual)) {
+    ge_stop("A residual covariance without true paired observations must be explicitly fixed zero", "unpaired_residual_covariance")
   }
   invisible(TRUE)
 }
@@ -139,10 +175,13 @@ dmu_stage <- function(ctx, directory, matrices, task) {
     for (i in seq_along(class_effects)) integer_data[[paste0("fx", i)]] <-
       ctx$data[[class_effects[[i]]$column]]
   }
-  shared_index <- NULL
-  if (!is.null(ctx$shared_role)) {
-    integer_data$shared <- ctx$data$shared
-    shared_index <- ncol(integer_data)
+  terms <- ge_random_terms(ctx)
+  factors <- dmu_factor_map(ctx)
+  random_indices <- rep(1L, length(terms))
+  if (length(terms) > 1L) for (i in seq.int(2L, length(terms))) {
+    column <- if (terms[[i]]$name == "shared") "shared" else paste0("rt", i)
+    integer_data[[column]] <- ctx$data[[terms[[i]]$column]]
+    random_indices[i] <- ncol(integer_data)
   }
   real_data <- as.data.frame(ctx$data[paste0("y", seq_len(ctx$nt))])
   if (length(cov_effects)) {
@@ -169,30 +208,43 @@ dmu_stage <- function(ctx, directory, matrices, task) {
               col.names = FALSE, quote = FALSE, sep = " ")
 
   roles <- dmu_roles(ctx)
-  random_cols <- c(1L, shared_index)
-  model_cols <- c(if (length(class_effects)) seq_len(length(class_effects)) + 1L, random_cols)
-  nrandom <- length(random_cols)
+  paired <- crossprod(!is.na(as.matrix(ctx$data[paste0("y", seq_len(ctx$nt))])))
+  nonexistent <- which(lower.tri(paired) & paired == 0L, arr.ind = TRUE)
   model <- c(as.character(ctx$nt), rep("0", ctx$nt))
   for (trait in seq_len(ctx$nt)) {
+    fixed_for_trait <- which(vapply(class_effects, function(x) trait %in% ge_effect_traits(x, ctx$nt), logical(1)))
+    random_for_trait <- which(vapply(terms, function(x) trait %in% ge_effect_traits(x, ctx$nt), logical(1)))
+    model_cols <- c(fixed_for_trait + 1L, random_indices[random_for_trait])
     model <- c(model, paste(c(trait, 0L, length(model_cols), model_cols), collapse = " "))
   }
-  model <- c(model, rep(paste(c(nrandom, seq_len(nrandom)), collapse = " "), ctx$nt))
-  regression <- paste(c(length(cov_effects), if (length(cov_effects))
-    seq_len(length(cov_effects)) + ctx$nt), collapse = " ")
-  model <- c(model, rep(regression, ctx$nt), "0")
+  for (trait in seq_len(ctx$nt)) {
+    active_random <- which(vapply(terms, function(x) trait %in% ge_effect_traits(x, ctx$nt), logical(1)))
+    model <- c(model, paste(c(length(active_random), active_random), collapse = " "))
+  }
+  for (trait in seq_len(ctx$nt)) {
+    active_cov <- which(vapply(cov_effects, function(x) trait %in% ge_effect_traits(x, ctx$nt), logical(1)))
+    model <- c(model, paste(c(length(active_cov), active_cov + ctx$nt), collapse = " "))
+  }
+  model <- c(model, as.character(nrow(nonexistent)),
+             if (nrow(nonexistent)) apply(nonexistent, 1L, function(pair) paste(pair, collapse = " ")))
   priors <- character()
   restrictions <- character()
   parameter_keys <- list()
   for (factor in seq_along(roles)) {
     role <- roles[factor]
     matrix <- matrices[[dmu_block_key(role)]]
-    for (row in seq_len(ctx$nt)) for (column in seq_len(row)) {
-      priors <- c(priors, paste(c(factor, row, column, sprintf("%.17g", matrix[row, column])),
+    active <- factors[[factor]]$traits
+    for (row in seq_along(active)) for (column in seq_len(row)) {
+      global_row <- active[row]
+      global_column <- active[column]
+      priors <- c(priors, paste(c(factor, row, column, sprintf("%.17g", matrix[global_row, global_column])),
                                collapse = " "))
       parameter_keys[[length(parameter_keys) + 1L]] <-
-        data.frame(factor = factor, role = role, trait1 = row, trait2 = column,
-                   fixed = dmu_is_fixed(ctx, role, row, column))
-      if (dmu_is_fixed(ctx, role, row, column)) {
+        data.frame(factor = factor, role = role, trait1 = global_row, trait2 = global_column,
+                   local_trait1 = row, local_trait2 = column,
+                   fixed = dmu_is_fixed(ctx, role, global_row, global_column))
+      missing_pair <- role == "residual" && global_row != global_column && paired[global_row, global_column] == 0L
+      if (dmu_is_fixed(ctx, role, global_row, global_column) && !missing_pair) {
         restrictions <- c(restrictions, paste("$VAR_REST COV", factor, "E", paste(row, column, sep = ",")))
       }
     }
@@ -215,7 +267,9 @@ dmu_stage <- function(ctx, directory, matrices, task) {
                    record_count = nrow(ctx$data), pedigree_count = nrow(ctx$ped),
                    missing_limit = missing_limit, missing_sentinel = sentinel,
                    pedigree_method = if (isTRUE(ctx$inbreeding)) 1L else 2L,
-                   roles = roles, covariance_keys = do.call(rbind, parameter_keys))
+                   roles = roles, factor_map = factors, true_coobservations = paired,
+                   nonexistent_residual_pairs = nonexistent,
+                   covariance_keys = do.call(rbind, parameter_keys))
   ge_write_json(manifest, file.path(directory, "input_manifest.json"))
   list(directory = directory, card = card, manifest = manifest)
 }
@@ -296,8 +350,8 @@ dmu_parse_components <- function(ctx, path) {
   raw <- dmu_numeric_rows(path, 4L)
   if (any(raw[, 1:3] != floor(raw[, 1:3]))) ge_stop("Invalid DMU component indices", "invalid_output")
   roles <- dmu_roles(ctx)
-  if (any(raw[, 1L] < 1L | raw[, 1L] > length(roles)) ||
-      any(raw[, 2:3] < 1L | raw[, 2:3] > ctx$nt)) {
+  factors <- dmu_factor_map(ctx)
+  if (any(raw[, 1L] < 1L | raw[, 1L] > length(roles)) || any(raw[, 2:3] < 1L)) {
     ge_stop("DMU covariance output does not match the configured model", "invalid_output")
   }
   row <- pmax(raw[, 2L], raw[, 3L])
@@ -308,17 +362,22 @@ dmu_parse_components <- function(ctx, path) {
   metadata <- data.frame()
   for (factor in seq_along(roles)) {
     role <- roles[factor]
+    active <- factors[[factor]]$traits
+    subset <- raw[, 1L] == factor
+    if (any(raw[subset, 2:3, drop = FALSE] > length(active))) ge_stop("DMU covariance local index exceeds the active factor dimension", "invalid_output")
     matrix <- matrix(0, ctx$nt, ctx$nt)
-    for (r in seq_len(ctx$nt)) for (c in seq_len(r)) {
+    for (r in seq_along(active)) for (c in seq_len(r)) {
       index <- match(paste(factor, r, c, sep = ":"), keys)
+      global_row <- active[r]
+      global_column <- active[c]
       if (is.na(index)) {
-        if (!dmu_is_fixed(ctx, role, r, c)) ge_stop("A free DMU component is missing", "incomplete_output")
+        if (!dmu_is_fixed(ctx, role, global_row, global_column)) ge_stop("A free DMU component is missing", "incomplete_output")
       } else {
         value <- raw[index, 4L]
-        if (dmu_is_fixed(ctx, role, r, c) && abs(value) > 1e-10) {
+        if (dmu_is_fixed(ctx, role, global_row, global_column) && abs(value) > 1e-10) {
           ge_stop("DMU did not apply the configured zero covariance", "constraint_mismatch")
         }
-        matrix[r, c] <- matrix[c, r] <- value
+        matrix[global_row, global_column] <- matrix[global_column, global_row] <- value
       }
     }
     if (any(diag(matrix) < 0) || min(eigen(matrix, symmetric = TRUE, only.values = TRUE)$values) <
@@ -330,16 +389,25 @@ dmu_parse_components <- function(ctx, path) {
   # R5.6 writes PAROUT in the exact lower-triangular free-parameter order.
   for (i in seq_len(nrow(raw))) {
     role <- roles[raw[i, 1L]]
-    metadata <- rbind(metadata, data.frame(role = role, trait1 = row[i], trait2 = column[i],
+    active <- factors[[raw[i, 1L]]]$traits
+    global_row <- active[row[i]]
+    global_column <- active[column[i]]
+    metadata <- rbind(metadata, data.frame(role = role, trait1 = global_row, trait2 = global_column,
                                            estimate = raw[i, 4L], factor = raw[i, 1L],
-                                           fixed = dmu_is_fixed(ctx, role, row[i], column[i])))
+                                           local_trait1 = row[i], local_trait2 = column[i],
+                                           fixed = dmu_is_fixed(ctx, role, global_row, global_column)))
   }
   list(components = components, metadata = metadata)
 }
 
 dmu_parse_sampling <- function(ctx, path, metadata) {
   warnings <- character()
-  native_se <- setNames(lapply(dmu_roles(ctx), function(role) matrix(NA_real_, ctx$nt, ctx$nt)),
+  native_se <- setNames(lapply(dmu_roles(ctx), function(role) {
+    value <- matrix(0, ctx$nt, ctx$nt)
+    active <- dmu_active(ctx, role)
+    value[active, active] <- NA_real_
+    value
+  }),
                          vapply(dmu_roles(ctx), dmu_block_key, character(1)))
   free <- !metadata$fixed
   failure <- function(reason) list(metadata = metadata[free, c("role", "trait1", "trait2")],
@@ -505,8 +573,12 @@ dmu_blup <- function(ctx, fit, directory, components = fit$components) {
     ge_stop("Unexpected DMU4 direct-solver SOL descriptor; SEP cannot be inferred", "unsupported_output_format")
   }
   raw <- dmu_numeric_rows(path, 9L)[-1L, , drop = FALSE]
-  animal <- raw[raw[, 1L] == 4L & raw[, 4L] == 1L, , drop = FALSE]
-  if (!nrow(animal) || any(animal[, 2L] != animal[, 3L]) ||
+  factor_map <- dmu_factor_map(ctx)
+  additive_factor <- which(vapply(factor_map, function(x) identical(x$role, "additive"), logical(1)))
+  animal <- raw[raw[, 1L] == 4L & raw[, 4L] == additive_factor, , drop = FALSE]
+  additive_traits <- factor_map[[additive_factor]]$traits
+  if (!nrow(animal) || any(animal[, 3L] < 1L | animal[, 3L] > length(additive_traits)) ||
+      any(animal[, 2L] != additive_traits[animal[, 3L]]) ||
       any(animal[, 2L] < 1L | animal[, 2L] > ctx$nt)) {
     ge_stop("DMU additive-factor trait mapping is invalid", "invalid_output")
   }

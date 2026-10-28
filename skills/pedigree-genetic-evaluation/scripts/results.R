@@ -2,49 +2,125 @@ ge_result_or <- function(value, fallback) {
   if (is.null(value)) fallback else value
 }
 
+ge_result_registry <- function(ctx) {
+  terms <- ctx$random
+
+  if (is.null(terms) && exists("ge_random_terms", mode = "function")) {
+    terms <- ge_random_terms(ctx)
+  }
+
+  if (is.null(terms)) {
+    terms <- list(list(name = "additive", role = "additive", traits = seq_len(ctx$nt)))
+
+    if (!is.null(ctx$shared_role)) {
+      terms[[2L]] <- list(name = "shared", role = ctx$shared_role, traits = seq_len(ctx$nt))
+    }
+  }
+
+  registry <- lapply(terms, function(term) {
+    key <- if (term$name == "shared" && term$role %in% c("litter", "pe")) term$role else term$name
+    active <- as.integer(ge_result_or(term$traits, seq_len(ctx$nt)))
+
+    if (!length(active) || anyNA(active) || anyDuplicated(active) ||
+        any(active < 1L | active > ctx$nt)) {
+      stop("Invalid active traits in random component: ", term$name)
+    }
+
+    list(key = key, source = term$name, role = term$role, traits = active)
+  })
+
+  registry[[length(registry) + 1L]] <- list(key = "residual", source = "residual",
+                                          role = "residual", traits = seq_len(ctx$nt))
+  keys <- vapply(registry, function(term) term$key, character(1))
+  sources <- vapply(registry, function(term) term$source, character(1))
+  roles <- vapply(registry, function(term) term$role, character(1))
+
+  if (anyNA(keys) || anyDuplicated(keys) || anyDuplicated(sources) ||
+      any(!roles %in% c("additive", "litter", "pe", "iid", "residual"))) {
+    stop("Random component names must be unique and their semantic roles valid.")
+  }
+
+  genetic <- which(roles == "additive")
+  if (length(genetic) != 1L || keys[genetic] != "additive" ||
+      !setequal(registry[[genetic]]$traits, seq_len(ctx$nt))) {
+    stop("Exactly one additive component on all traits is required.")
+  }
+
+  names(registry) <- keys
+  registry
+}
+
+ge_result_fixed <- function(ctx, term, first, second) {
+  if (!all(c(first, second) %in% term$traits)) {
+    return(TRUE)
+  }
+
+  constraint <- ctx$constraints[[term$source]]
+  if (is.null(constraint)) constraint <- ctx$constraints[[term$key]]
+  !is.null(constraint) && isTRUE(constraint[first, second])
+}
+
+ge_result_psd <- function(value) {
+  diagonal <- diag(value)
+  if (any(diagonal < 0)) return(FALSE)
+  zero <- which(diagonal == 0)
+  if (length(zero) && any(value[zero, , drop = FALSE] != 0)) return(FALSE)
+  positive <- which(diagonal > 0)
+  if (!length(positive)) return(TRUE)
+
+  scale <- sqrt(diagonal[positive])
+  correlation <- value[positive, positive, drop = FALSE] / outer(scale, scale)
+  if (any(!is.finite(correlation)) || max(abs(correlation - t(correlation))) > 1e-8) return(FALSE)
+  min(eigen(correlation, symmetric = TRUE, only.values = TRUE)$values) >=
+    -1e-8 * max(1, abs(correlation))
+}
+
 ge_result_components <- function(ctx, fit) {
   supplied <- fit$components
-
-  if (is.null(supplied$additive) || is.null(supplied$residual)) {
-    stop("Final additive and residual matrices are required.")
+  registry <- ge_result_registry(ctx)
+  answer <- list()
+  allowed <- unique(c(names(registry), vapply(registry, function(term) term$source, character(1))))
+  if (length(setdiff(names(supplied), allowed))) {
+    stop("Final component matrices contain an undeclared random component.")
   }
 
-  answer <- list(additive = as.matrix(supplied$additive))
-
-  if (!is.null(ctx$shared_role)) {
-    shared <- supplied$shared
-
-    if (is.null(shared)) {
-      shared <- supplied[[ctx$shared_role]]
-    }
-
-    if (is.null(shared)) {
-      stop("The final shared-effect matrix is missing.")
-    }
-
-    answer[[ctx$shared_role]] <- as.matrix(shared)
-  }
-
-  answer$residual <- as.matrix(supplied$residual)
-
-  for (role in names(answer)) {
-    value <- answer[[role]]
+  for (key in names(registry)) {
+    term <- registry[[key]]
+    value <- supplied[[term$source]]
+    if (is.null(value)) value <- supplied[[key]]
+    if (is.null(value)) stop("A final component matrix is missing: ", term$source)
+    value <- as.matrix(value)
 
     if (!identical(dim(value), c(as.integer(ctx$nt), as.integer(ctx$nt)))) {
-      stop("A final component has the wrong matrix dimensions: ", role)
+      stop("A final component has the wrong matrix dimensions: ", term$source)
     }
 
     if (!is.numeric(value) || any(!is.finite(value)) ||
         max(abs(value - t(value))) > 1e-8 * max(1, abs(value))) {
-      stop("A final component is non-finite or asymmetric: ", role)
+      stop("A final component is non-finite or asymmetric: ", term$source)
     }
 
-    if (min(eigen(value, symmetric = TRUE, only.values = TRUE)$values) <
-        -1e-8 * max(1, abs(value))) {
-      stop("A final component is not positive semidefinite: ", role)
+    inactive <- setdiff(seq_len(ctx$nt), term$traits)
+    if (length(inactive) && any(value[inactive, , drop = FALSE] != 0)) {
+      stop("An inactive random-component trait has nonzero variance/covariance: ", term$source)
     }
+
+    for (first in term$traits) {
+      for (second in term$traits[term$traits >= first]) {
+        if (ge_result_fixed(ctx, term, first, second) && value[first, second] != 0) {
+          stop("A final component violates its fixed-zero constraint: ", term$source)
+        }
+      }
+    }
+
+    if (!ge_result_psd(value)) {
+      stop("A final component is not positive semidefinite: ", term$source)
+    }
+
+    answer[[key]] <- value
   }
 
+  attr(answer, "roles") <- vapply(registry, function(term) term$role, character(1))
   answer
 }
 
@@ -65,11 +141,28 @@ ge_result_covariance <- function(ctx, fit, components) {
     return(missing)
   }
 
+  if ("component" %in% names(meta) && !identical(as.character(meta$component), as.character(meta$role))) {
+    missing$note <- "Sampling metadata component and role keys disagree; derived SE was not calculated."
+    return(missing)
+  }
+
+  registry <- ge_result_registry(ctx)
+  sources <- vapply(registry, function(term) term$source, character(1))
   meta <- meta[required]
   meta$role <- as.character(meta$role)
-  meta$role[meta$role == "shared"] <- ge_result_or(ctx$shared_role, "shared")
-  meta$trait1 <- as.integer(meta$trait1)
-  meta$trait2 <- as.integer(meta$trait2)
+  matches <- match(meta$role, sources)
+  meta$role[!is.na(matches)] <- names(registry)[matches[!is.na(matches)]]
+  first <- suppressWarnings(as.numeric(as.character(meta$trait1)))
+  second <- suppressWarnings(as.numeric(as.character(meta$trait2)))
+
+  if (any(!is.finite(first)) || any(!is.finite(second)) ||
+      any(first != trunc(first)) || any(second != trunc(second))) {
+    missing$note <- "Sampling trait indices are not valid integers; derived SE was not calculated."
+    return(missing)
+  }
+
+  meta$trait1 <- as.integer(first)
+  meta$trait2 <- as.integer(second)
   covariance <- as.matrix(covariance)
 
   valid_meta <- all(meta$role %in% names(components)) &&
@@ -88,12 +181,11 @@ ge_result_covariance <- function(ctx, fit, components) {
   }
 
   for (role in names(components)) {
-    constraint_role <- if (role %in% c("litter", "pe")) "shared" else role
-    constraints <- ctx$constraints[[constraint_role]]
+    term <- registry[[role]]
 
     for (first in seq_len(ctx$nt)) {
       for (second in first:ctx$nt) {
-        fixed <- !is.null(constraints) && isTRUE(constraints[first, second])
+        fixed <- ge_result_fixed(ctx, term, first, second)
         key <- paste(role, first, second, sep = ":")
 
         if ((!fixed && !key %in% keys) || (fixed && key %in% keys)) {
@@ -104,10 +196,10 @@ ge_result_covariance <- function(ctx, fit, components) {
     }
   }
 
-  scale <- max(1, abs(covariance))
+  scale <- max(.Machine$double.eps, abs(covariance))
 
   if (max(abs(covariance - t(covariance))) > 1e-8 * scale ||
-      min(eigen(covariance, symmetric = TRUE, only.values = TRUE)$values) < -1e-8 * scale) {
+      !ge_result_psd(covariance)) {
     missing$note <- "Sampling covariance is not a valid symmetric positive-semidefinite matrix; derived SE was not calculated."
     return(missing)
   }
@@ -121,7 +213,7 @@ ge_result_delta <- function(gradient, sampling) {
   }
 
   variance <- drop(crossprod(gradient, sampling$covariance %*% gradient))
-  tolerance <- 1e-10 * max(1, abs(sampling$covariance)) * sum(abs(gradient))^2
+  tolerance <- 1e-10 * max(.Machine$double.eps, abs(sampling$covariance)) * sum(abs(gradient))^2
 
   if (!is.finite(variance) || variance < -tolerance) {
     return(NA_real_)
@@ -130,7 +222,8 @@ ge_result_delta <- function(gradient, sampling) {
   sqrt(max(0, variance))
 }
 
-ge_result_gradient <- function(kind, components, meta, trait1, trait2 = trait1, role = NULL) {
+ge_result_gradient <- function(kind, components, meta, trait1, trait2 = trait1, role = NULL,
+                               pe_roles = NULL) {
   if (is.null(meta)) {
     return(numeric())
   }
@@ -158,9 +251,14 @@ ge_result_gradient <- function(kind, components, meta, trait1, trait2 = trait1, 
   }
 
   if (kind == "repeatability") {
-    numerator <- additive + components$pe[trait1, trait1]
+    if (is.null(pe_roles)) {
+      semantics <- attr(components, "roles")
+      pe_roles <- if (is.null(semantics)) intersect("pe", names(components)) else names(semantics)[semantics == "pe"]
+    }
+
+    numerator <- additive + sum(vapply(components[pe_roles], function(x) x[trait1, trait1], numeric(1)))
     gradient[diagonal] <- -numerator / total^2
-    numerator_parameters <- diagonal & meta$role %in% c("additive", "pe")
+    numerator_parameters <- diagonal & meta$role %in% c("additive", pe_roles)
     gradient[numerator_parameters] <- gradient[numerator_parameters] + 1 / total
   }
 
@@ -213,17 +311,23 @@ ge_result_native_se <- function(fit, role, trait1, trait2) {
 }
 
 ge_parameters <- function(ctx, fit) {
+  registry <- ge_result_registry(ctx)
   components <- ge_result_components(ctx, fit)
   sampling <- ge_result_covariance(ctx, fit, components)
   rows <- list()
 
   add_row <- function(parameter, first, second = first, estimate,
                       kind, role = NULL, note = "") {
-    gradient <- ge_result_gradient(kind, components, sampling$meta, first, second, role)
+    pe_roles <- names(registry)[vapply(registry, function(term) {
+      term$role == "pe" && first %in% term$traits
+    }, logical(1))]
+    gradient <- ge_result_gradient(kind, components, sampling$meta, first, second, role, pe_roles)
     standard_error <- if (is.finite(estimate)) ge_result_delta(gradient, sampling) else NA_real_
     method <- if (is.finite(standard_error)) "delta" else "unavailable"
+    fixed <- kind == "component" && ge_result_fixed(ctx, registry[[role]], first, second)
+    inactive <- kind == "component" && !all(c(first, second) %in% registry[[role]]$traits)
 
-    if (kind == "component" && !is.finite(standard_error)) {
+    if (kind == "component" && !fixed && !is.finite(standard_error)) {
       standard_error <- ge_result_native_se(fit, role, first, second)
 
       if (is.finite(standard_error)) {
@@ -235,7 +339,14 @@ ge_parameters <- function(ctx, fit) {
       method <- "sampling covariance"
     }
 
-    if (!is.finite(standard_error) && is.finite(estimate)) {
+    if (fixed) {
+      standard_error <- NA_real_
+      method <- if (inactive) "inactive" else "fixed"
+      note <- if (inactive) "Component does not apply to this trait pair; structural zero." else
+        "Fixed zero covariance; not an estimated parameter."
+    }
+
+    if (!fixed && !is.finite(standard_error) && is.finite(estimate)) {
       note <- paste(note, sampling$note)
     }
 
@@ -254,10 +365,17 @@ ge_parameters <- function(ctx, fit) {
       note <- paste(note, "Estimation did not converge; values are provisional.")
     }
 
+    if (kind == "repeatability") {
+      note <- paste(note, "Permanent-environment components in numerator:",
+                    paste(vapply(registry[pe_roles], function(term) term$source, character(1)), collapse = ", "))
+    }
+
     rows[[length(rows) + 1L]] <<- data.frame(
       parameter = parameter, trait = trait, estimate = estimate,
       SE = standard_error, unit = unit, SE_method = method,
-      note = trimws(note), stringsAsFactors = FALSE
+      note = trimws(note), component = if (kind == "component") registry[[role]]$source else NA_character_,
+      role = if (kind == "component") registry[[role]]$role else NA_character_,
+      trait1 = first, trait2 = second, stringsAsFactors = FALSE
     )
   }
 
@@ -271,8 +389,12 @@ ge_parameters <- function(ctx, fit) {
     }
 
     total <- sum(vapply(components, function(x) x[trait, trait], numeric(1)))
-    boundary <- any(vapply(components, function(x) x[trait, trait] <= 1e-10, logical(1)))
+    applicable <- vapply(registry, function(term) trait %in% term$traits, logical(1))
+    boundary <- any(vapply(components[applicable], function(x) x[trait, trait] <= 1e-10, logical(1)))
     note <- if (boundary) "A variance component is on the boundary; delta SE is an asymptotic approximation." else ""
+    pe_roles <- names(registry)[vapply(registry, function(term) {
+      term$role == "pe" && trait %in% term$traits
+    }, logical(1))]
 
     add_row("Vp", trait, estimate = total, kind = "Vp", note = note)
 
@@ -280,16 +402,17 @@ ge_parameters <- function(ctx, fit) {
       add_row("h2", trait, estimate = components$additive[trait, trait] / total,
               kind = "h2", note = note)
 
-      if ("pe" %in% names(components)) {
+      if (length(pe_roles)) {
         add_row("repeatability", trait,
-                estimate = (components$additive[trait, trait] + components$pe[trait, trait]) / total,
+                estimate = (components$additive[trait, trait] +
+                  sum(vapply(components[pe_roles], function(x) x[trait, trait], numeric(1)))) / total,
                 kind = "repeatability", note = note)
       }
     } else {
       add_row("h2", trait, estimate = NA_real_, kind = "h2",
               note = "Total variance is zero; heritability is undefined.")
 
-      if ("pe" %in% names(components)) {
+      if (length(pe_roles)) {
         add_row("repeatability", trait, estimate = NA_real_, kind = "repeatability",
                 note = "Total variance is zero; repeatability is undefined.")
       }
@@ -304,19 +427,9 @@ ge_parameters <- function(ctx, fit) {
       second <- pairs[2, pair]
 
       for (role in names(components)) {
-        constraint_role <- if (role %in% c("litter", "pe")) "shared" else role
-        constraint <- ctx$constraints[[constraint_role]]
-        fixed <- !is.null(constraint) && isTRUE(constraint[first, second])
-        note <- if (fixed) "Fixed zero covariance; not an estimated parameter." else ""
-
         add_row(paste0(role, "_covariance"), first, second,
                 estimate = components[[role]][first, second], kind = "component",
-                role = role, note = note)
-
-        if (fixed) {
-          rows[[length(rows)]]$SE <- NA_real_
-          rows[[length(rows)]]$SE_method <- "fixed"
-        }
+                role = role)
       }
 
       first_variance <- components$additive[first, first]
@@ -328,6 +441,10 @@ ge_parameters <- function(ctx, fit) {
 
       note <- if (!valid) "Additive variance is zero; genetic correlation is undefined." else {
         if (abs(correlation) >= 1 - 1e-8) "Boundary correlation; delta SE requires caution." else ""
+      }
+
+      if (ge_result_fixed(ctx, registry$additive, first, second)) {
+        note <- paste(note, "Additive covariance fixed zero; genetic correlation is constrained zero.")
       }
 
       add_row("rg", first, second, estimate = correlation, kind = "rg", note = note)
@@ -354,8 +471,27 @@ ge_result_ebv <- function(ctx, ebv) {
   answer
 }
 
+ge_result_membership <- function(ctx) {
+  membership <- ctx$trait_rows
+  if (is.null(membership)) membership <- matrix(TRUE, nrow(ctx$data), ctx$nt)
+
+  if (!is.matrix(membership) || !is.logical(membership) || anyNA(membership) ||
+      !identical(dim(membership), c(nrow(ctx$data), as.integer(ctx$nt)))) {
+    stop("Trait event membership must be a complete logical records-by-traits matrix.")
+  }
+
+  for (trait in seq_len(ctx$nt)) {
+    if (any(is.finite(ctx$data[[paste0("y", trait)]]) & !membership[, trait])) {
+      stop("An observed phenotype lies outside its trait event membership.")
+    }
+  }
+
+  membership
+}
+
 ge_annual <- function(ctx, ebv) {
   ebv <- ge_result_ebv(ctx, ebv)
+  membership <- ge_result_membership(ctx)
   bases <- ge_result_or(ctx$trend_basis, "event_year")
   bases <- unique(as.character(bases))
 
@@ -390,10 +526,11 @@ ge_annual <- function(ctx, ebv) {
     }
 
     for (year in sort(unique(years[valid_year]))) {
-      subset <- ctx$data[!is.na(years) & years == year, , drop = FALSE]
-      ids <- unique(subset$id)
-
       for (trait in seq_len(ctx$nt)) {
+        selected <- !is.na(years) & years == year & membership[, trait]
+        if (!any(selected)) next
+        subset <- ctx$data[selected, , drop = FALSE]
+        ids <- unique(subset$id)
         phenotype <- subset[[paste0("y", trait)]]
         observed <- is.finite(phenotype)
         genetic <- ebv$EBV[ebv$trait == trait & ebv$id %in% ids]
@@ -639,39 +776,45 @@ ge_result_trend_figures <- function(ctx, annual, directory) {
 
   for (basis in unique(annual$year_basis)) {
     for (type in c("phenotypic", "genetic")) {
-      file <- file.path(directory, paste0(type, "_", basis, ".png"))
       column <- if (type == "phenotypic") "mean_phenotype" else "mean_EBV"
       title <- if (type == "phenotypic") "\u8868\u578b\u8fdb\u5c55" else "\u9057\u4f20\u8fdb\u5c55"
 
-      ge_result_png(file, 1400, 700 * ctx$nt, function() {
-        graphics::par(mfrow = c(ctx$nt, 1))
+      pages <- split(seq_len(ctx$nt), ceiling(seq_len(ctx$nt) / 4L))
 
-        for (trait in seq_len(ctx$nt)) {
-          subset <- annual[annual$year_basis == basis & annual$trait == ctx$traits$name[trait], , drop = FALSE]
-          keep <- is.finite(subset[[column]]) & is.finite(subset$year)
-          value <- subset[[column]][keep]
-          year <- subset$year[keep]
+      for (traits in pages) {
+        suffix <- if (length(pages) > 1L) paste0("_traits_", min(traits), "_", max(traits)) else ""
+        file <- file.path(directory, paste0(type, "_", basis, suffix, ".png"))
 
-          if (!length(value)) {
-            graphics::plot.new()
-            graphics::title(main = title)
-            graphics::text(0.5, 0.5, "No valid annual means")
-            next
+        ge_result_png(file, 1400, 700 * length(traits), function() {
+          graphics::par(mfrow = c(length(traits), 1))
+
+          for (trait in traits) {
+            subset <- annual[annual$year_basis == basis & annual$trait == ctx$traits$name[trait], , drop = FALSE]
+            keep <- is.finite(subset[[column]]) & is.finite(subset$year)
+            value <- subset[[column]][keep]
+            year <- subset$year[keep]
+
+            if (!length(value)) {
+              graphics::plot.new()
+              graphics::title(main = title)
+              graphics::text(0.5, 0.5, "No valid annual means")
+              next
+            }
+
+            xlab <- if (basis == "birth_year") "Birth year" else "Production year"
+            graphics::plot(year, value, type = "o", pch = 19, lwd = 2,
+                           col = "#D35C2D", main = title, xlab = xlab,
+                           ylab = paste0(ctx$traits$label[trait], " (", ctx$traits$unit[trait], ")"), xaxt = "n")
+            graphics::axis(1, at = year, labels = year)
+
+            if (length(value) >= 3) {
+              graphics::abline(lm(value ~ year), col = "#595959", lty = 2, lwd = 1.5)
+            }
           }
+        })
 
-          xlab <- if (basis == "birth_year") "Birth year" else "Production year"
-          graphics::plot(year, value, type = "o", pch = 19, lwd = 2,
-                         col = "#D35C2D", main = title, xlab = xlab,
-                         ylab = paste0(ctx$traits$label[trait], " (", ctx$traits$unit[trait], ")"), xaxt = "n")
-          graphics::axis(1, at = year, labels = year)
-
-          if (length(value) >= 3) {
-            graphics::abline(lm(value ~ year), col = "#595959", lty = 2, lwd = 1.5)
-          }
-        }
-      })
-
-      paths <- c(paths, file)
+        paths <- c(paths, file)
+      }
     }
   }
 
@@ -701,6 +844,13 @@ ge_export_results <- function(ctx, fit, ebv, directory) {
               paste(ge_result_or(ctx$model_description, "See retained model configuration and parameter cards."), collapse = "\n")),
     stringsAsFactors = FALSE
   )
+
+  random <- ge_result_registry(ctx)
+  random_description <- paste(vapply(random[names(random) != "residual"], function(term) {
+    paste0(term$source, " [", term$role, "; traits: ",
+           paste(ctx$traits$name[term$traits], collapse = ", "), "]")
+  }, character(1)), collapse = "; ")
+  settings <- rbind(settings, data.frame(item = "random_effects", value = random_description))
 
   warnings <- c(as.character(fit$warnings), annual$warnings,
                 if (is.null(ctx$raw_data) && is.null(ctx$qc_before))

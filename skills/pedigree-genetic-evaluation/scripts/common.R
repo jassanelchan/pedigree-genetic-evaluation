@@ -97,7 +97,7 @@ ge_read_tabular <- function(source, base = getwd()) {
   } else {
     sep <- source$sep
     if (is.null(sep)) sep <- if (extension == "csv") "," else if (extension == "tsv") "\t" else ""
-    header <- if (is.null(source$header)) TRUE else isTRUE(source$header)
+    header <- ge_boolean(source$header, "Table header", TRUE)
     encoding <- if (is.null(source$encoding)) "UTF-8-BOM" else source$encoding
     data <- read.table(path, sep = sep, header = header, colClasses = "character",
                        check.names = FALSE, stringsAsFactors = FALSE, comment.char = "",
@@ -206,4 +206,50 @@ ge_write_bom_csv <- function(x, path) {
   writeBin(as.raw(c(239, 187, 191)), connection)
   lines <- capture.output(write.csv(x, row.names = FALSE, na = ""))
   writeBin(charToRaw(enc2utf8(paste0(paste(lines, collapse = "\r\n"), "\r\n"))), connection)
+}
+
+ge_effect_traits <- function(effect, nt) {
+  if (is.null(effect$traits)) return(seq_len(nt))
+  active <- as.integer(unlist(effect$traits))
+  if (!length(active) || anyNA(active) || anyDuplicated(active) ||
+      any(active < 1L | active > nt)) {
+    ge_stop("An effect needs distinct valid trait indices", "invalid_effect_traits")
+  }
+  sort(active)
+}
+
+ge_random_terms <- function(ctx) {
+  if (length(ctx$random)) return(ctx$random)
+  terms <- list(additive = list(name = "additive", role = "additive",
+                                relationship = "pedigree", column = "id",
+                                traits = seq_len(ctx$nt), levels = if (is.null(ctx$ped)) 0L else nrow(ctx$ped)))
+  if (!is.null(ctx$shared_role)) {
+    levels <- if (ctx$shared_role == "pe") {
+      if (is.null(ctx$ped)) 0L else nrow(ctx$ped)
+    } else if (length(ctx$data$shared)) max(ctx$data$shared) else 0L
+    terms$shared <- list(name = "shared", role = ctx$shared_role,
+                         relationship = "identity", column = "shared",
+                         traits = seq_len(ctx$nt), levels = levels)
+  }
+  terms
+}
+
+ge_trait_indices <- function(selection, traits) {
+  if (is.null(selection)) return(seq_len(nrow(traits)))
+  requested <- as.character(unlist(selection))
+  active <- match(requested, traits$name)
+  if (!length(active) || anyNA(active) || anyDuplicated(active)) {
+    ge_stop("Effect traits must be distinct names from the analysis trait list",
+            "invalid_effect_traits")
+  }
+  sort(active)
+}
+
+
+ge_boolean <- function(value, field, default = FALSE) {
+  if (is.null(value)) return(default)
+  if (!is.logical(value) || length(value) != 1L || is.na(value)) {
+    ge_stop(paste(field, "must be a JSON boolean true or false"), "invalid_boolean")
+  }
+  value
 }

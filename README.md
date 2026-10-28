@@ -99,8 +99,6 @@ stopifnot(status == 0L)
 
 After configuring the solver, set `prepare_only <- FALSE` to run the full evaluation. This launches a separate R process; do not use `source()` on the command-line entry script.
 
-The repository provides R scripts and is not currently an installable R package.
-
 ## Software setup
 
 The verified environment is **Windows with R 4.5.3**. Other operating systems and program versions have not been validated.
@@ -144,13 +142,36 @@ $env:LANG = 'English_United States.utf8'
 
 | Model | Traits | Random effects |
 | --- | --- | --- |
-| Animal | 1 or 2 | Additive genetic, residual |
-| Common litter | 1 or 2 | Additive genetic, common litter, residual |
-| Repeatability | 1 | Additive genetic, permanent environment, residual |
+| Animal (`animal`) | 1 or more | Additive genetic, residual |
+| Common litter (`litter`) | 1 or more | Additive genetic, common litter, residual |
+| Repeatability (`repeatability`) | 1 or more | Additive genetic, permanent environment, residual |
+| General (`general`) | 1 or more | Additive genetic, multiple named litter, permanent-environment or independent grouping effects, residual |
 
-Both traits use the same fixed-effect structure, with categorical effects and continuous covariates supported. Litter models need a litter ID or the dam ID together with offspring birth date. Repeated records need an animal-and-event record key.
+The first three are shortcuts for common designs; existing project files remain valid. The general model also supports single and repeated traits in the same analysis. Schema versions `1` and `2` are accepted. The number of traits is subject to data, identifiability and backend checks; three- and four-trait designs have been run with both verified software versions.
 
-The current scope is Gaussian pedigree models. Count traits are checked for non-negative integers and fitted with a Gaussian model. Genomic, three-trait, threshold, random-regression, maternal genetic and unknown-parent-group models are outside the current scope.
+Fixed effects can apply to all traits or a named subset through `fixed[].traits`. Categorical effects and continuous covariates are supported. Additive genetic effects apply to every trait. Each additional random term has a unique name, a role (`litter`, `pe` or `iid`) and its own applicable traits. Covariances may be estimated between traits within a term; different named random terms are independent.
+
+Litter effects need a litter ID, or the dam ID together with offspring birth date. Permanent environment is grouped by animal. Repeated records need an animal-and-event record key. For mixed designs, each trait needs an explicit event filter: keep a growth measurement on its original row and each farrowing on its own row, rather than copying growth phenotypes into farrowing records. Residual covariances between traits with no paired observations need explicit zero constraints; the workflow does not choose these assumptions automatically.
+
+The current scope is Gaussian pedigree models. Count traits are checked for non-negative integers and fitted with a Gaussian model. Genomic, maternal genetic, heterogeneous-residual, threshold, random-regression and unknown-parent-group models are outside the current scope. Covariance between different named random terms is not supported.
+
+### Joint growth and reproduction example
+
+The [multitrait example](skills/pedigree-genetic-evaluation/references/example/multitrait-project.json) combines age at 120 kg and backfat measured once with repeated total-born records. Sex applies to the two growth traits, while parity and farrowing season apply to total born. The `birth_litter` term applies to growth and `sow_pe` to total born. Additive genetic covariance links all three traits; growth–total-born residual covariances are explicitly fixed at zero because the observations come from different events.
+
+Copy the specification before editing it. From the repository root in PowerShell:
+
+```powershell
+Copy-Item skills/pedigree-genetic-evaluation/references/example/multitrait-project.json skills/pedigree-genetic-evaluation/references/example/multitrait-local.json
+```
+
+Check that copy without starting a solver:
+
+```sh
+Rscript --vanilla skills/pedigree-genetic-evaluation/scripts/run_eval.R --spec skills/pedigree-genetic-evaluation/references/example/multitrait-local.json --engine blupf90 --prepare-only
+```
+
+After software setup, remove `--prepare-only` for a full run. Use `--engine dmu` or `--engine compare` for DMU or both programs. Keep data paths relative to the copied JSON, or change them to absolute paths if moving it to another directory. The original [two-analysis example](skills/pedigree-genetic-evaluation/references/example/project.json) remains available for separate growth and reproduction analyses.
 
 ## Inputs and results
 
@@ -165,7 +186,9 @@ Default QC applies mean ±3 SD once, separately for each trait. A missing or rej
 | `delivery/analysis_*/*.png` | QC histograms and annual trend plots |
 | Run directory | Input snapshots, reproduction configuration, code, parameter files, ID maps, solver logs, versions and run manifest |
 
-Standard errors for derived genetic parameters use the full sampling covariance matrix and the Delta method. Annual summaries use measurement or farrowing year by default; each animal contributes one EBV per year. See [result definitions](skills/pedigree-genetic-evaluation/references/results.md) for interpretation and numerical checks.
+Variance components are reported separately for each named random term. A trait's phenotypic variance includes all terms acting on it; repeatability is reported only when a permanent-environment term applies, with additive and permanent-environment variance in its numerator. Litter and other independent grouping effects are not included in that numerator.
+
+Standard errors for derived genetic parameters use the full sampling covariance matrix and the Delta method. Annual summaries use measurement or farrowing year by default; each animal contributes one EBV per trait and year. In a mixed design, only the event rows assigned to that trait are used, so a sow's farrowing years do not become years of growth evaluation. See [result definitions](skills/pedigree-genetic-evaluation/references/results.md) for interpretation and numerical checks.
 
 Input paths and a relative `--output` are resolved from the **project JSON directory**. The bundled example therefore writes to `skills/pedigree-genetic-evaluation/references/example/example_runs/`, with a separate subdirectory for each run.
 
@@ -189,4 +212,12 @@ Run the offline data-processing and statistical tests without either solver:
 Rscript --vanilla tests/run_tests.R
 ```
 
-Test fixtures and the bundled example are synthetic. The adapters have also been checked with native REML and BLUP runs covering partial trait missingness, inbreeding, common litter, permanent environment and cross-program comparisons.
+Test fixtures and the bundled examples are synthetic. The offline suite covers data preparation and statistical calculations, including trait-specific effects, mixed single/repeated records and multiple random terms. Native REML and BLUP checks cover the original models, three- and four-trait designs, partial trait missingness, inbreeding and cross-program comparisons with the verified versions listed above.
+
+To run the native regression checks, configure both programs in the local profile, then run:
+
+```sh
+Rscript --vanilla tests/run_native_tests.R --profile skills/pedigree-genetic-evaluation/host_profile.json
+```
+
+This runs both bundled project specifications in comparison mode and checks that resuming the completed runs does not restart the solvers. Add `--output <absolute-directory>` to choose where the test results are saved.
